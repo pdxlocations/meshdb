@@ -1,0 +1,24 @@
+[project]
+name = "nodedb"
+version = "0.1.0"
+description = "A python package for managing a Meshtastic node database."
+authors = [
+    {name = "Ben Lipsey",email = "ben@pdxlocations.com"}
+]
+license = "GPL-3.0-only"
+readme = "README.md"
+requires-python = ">=3.9,<3.14"
+dependencies = [
+    "meshtastic (>=2.6.0,<3.0.0)"
+]
+
+[project.urls]
+Homepage = "https://github.com/pdxlocations/nodedb"
+Issues = "https://github.com/pdxlocations/nodedb/issues"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+nodedb = "nodedb.__main__:start"
