@@ -1,5 +1,5 @@
 [project]
-name = "nodedb"
+name = "meshdb"
 version = "0.1.0"
 description = "A python package for managing a Meshtastic node database."
 authors = [
@@ -13,12 +13,12 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pdxlocations/nodedb"
-Issues = "https://github.com/pdxlocations/nodedb/issues"
+Homepage = "https://github.com/pdxlocations/meshdb"
+Issues = "https://github.com/pdxlocations/meshdb/issues"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-nodedb = "nodedb.__main__:start"
+meshdb = "meshdb.__main__:start"

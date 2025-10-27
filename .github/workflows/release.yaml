@@ -9,7 +9,7 @@ on:
       - "[0-9]+.[0-9]+.[0-9]+rc[0-9]+"
 
 env:
-  PACKAGE_NAME: "nodedb"
+  PACKAGE_NAME: "meshdb"
   OWNER: "pdxlocations"
 
 jobs:
