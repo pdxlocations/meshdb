@@ -85,7 +85,7 @@ class NodeDB(_DB):
 
     def ensure_table(self) -> None:
         schema = (
-            "user_id TEXT PRIMARY KEY,"
+            "node_id TEXT PRIMARY KEY,"
             "long_name TEXT,"
             "short_name TEXT,"
             "macaddr TEXT,"
@@ -118,7 +118,7 @@ class NodeDB(_DB):
 
     def upsert(
         self,
-        user_id: Union[int, str],
+        node_id: Union[int, str],
         long_name: Optional[str] = None,
         short_name: Optional[str] = None,
         hw_model: Optional[Union[str, int]] = None,
@@ -135,12 +135,12 @@ class NodeDB(_DB):
         self.ensure_table()
         with self.connect() as con:
             cur = con.cursor()
-            cur.execute(f"SELECT * FROM {self.table} WHERE user_id = ?", (user_id,))
+            cur.execute(f"SELECT * FROM {self.table} WHERE node_id = ?", (node_id,))
             existing = cur.fetchone()
 
             if existing:
                 (
-                    _user_id,
+                    _node_id,
                     ex_long,
                     ex_short,
                     ex_mac,
@@ -161,12 +161,12 @@ class NodeDB(_DB):
             long_name = (
                 long_name
                 if long_name is not None
-                else (ex_long if ex_long is not None else "Meshtastic " + str(decimal_to_hex(user_id)[-4:]))
+                else (ex_long if ex_long is not None else "Meshtastic " + str(decimal_to_hex(node_id)[-4:]))
             )
             short_name = (
                 short_name
                 if short_name is not None
-                else (ex_short if ex_short is not None else str(decimal_to_hex(user_id)[-4:]))
+                else (ex_short if ex_short is not None else str(decimal_to_hex(node_id)[-4:]))
             )
             macaddr = macaddr if macaddr is not None else (ex_mac if ex_mac is not None else "")
             hw_model = str(hw_model) if hw_model is not None else (ex_hw if ex_hw is not None else "UNSET")
@@ -182,9 +182,9 @@ class NodeDB(_DB):
 
             upsert_sql = f"""
                 INSERT INTO {self.table}
-                    (user_id, long_name, short_name, macaddr, hw_model, role, is_licensed, public_key, is_unmessagable, last_heard, hops_away, snr)
+                    (node_id, long_name, short_name, macaddr, hw_model, role, is_licensed, public_key, is_unmessagable, last_heard, hops_away, snr)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
+                ON CONFLICT(node_id) DO UPDATE SET
                     long_name=excluded.long_name,
                     short_name=excluded.short_name,
                     macaddr=excluded.macaddr,
@@ -200,7 +200,7 @@ class NodeDB(_DB):
             cur.execute(
                 upsert_sql,
                 (
-                    user_id,
+                    node_id,
                     long_name,
                     short_name,
                     macaddr,
@@ -216,21 +216,21 @@ class NodeDB(_DB):
             )
             con.commit()
 
-    def get_name(self, user_id: int, kind: str = "long") -> str:
+    def get_name(self, node_id: int, kind: str = "long") -> str:
         """Return long or short name; fallback to hex string when missing."""
         self.ensure_table()
         col = "long_name" if kind == "long" else "short_name"
         with self.connect() as con:
             cur = con.cursor()
-            cur.execute(f"SELECT {col} FROM {self.table} WHERE user_id = ?", (user_id,))
+            cur.execute(f"SELECT {col} FROM {self.table} WHERE node_id = ?", (node_id,))
             row = cur.fetchone()
-            return row[0] if row and row[0] else decimal_to_hex(user_id)
+            return row[0] if row and row[0] else decimal_to_hex(node_id)
 
     def init_from_interface_nodes(self, nodes: List[Dict[str, object]]) -> None:
         """Initialize/populate the node table from an iterable of node dicts."""
         for node in list(nodes):
             self.upsert(
-                user_id=node.get("num"),
+                node_id=node.get("num"),
                 long_name=node.get("user", {}).get("longName", ""),
                 short_name=node.get("user", {}).get("shortName", ""),
                 macaddr=node.get("user", {}).get("macaddr", ""),
@@ -257,7 +257,7 @@ class LocationDB(_DB):
 
     def ensure_table(self) -> None:
         schema = (
-            "user_id TEXT,"
+            "node_id TEXT,"
             "timestamp INTEGER,"  # packet rxTime fallback
             "latitude REAL,"
             "longitude REAL,"
@@ -291,9 +291,9 @@ class LocationDB(_DB):
             cur.execute(f"CREATE TABLE IF NOT EXISTS {self.table} ({schema})")
             # Index to speed up history queries
             cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_loc_user_time ON {self.table} (user_id, timestamp)"
+                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_loc_user_time ON {self.table} (node_id, timestamp)"
             )
-            cur.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_loc_user ON {self.table} (user_id)")
+            cur.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_loc_user ON {self.table} (node_id)")
             cur.execute(f"PRAGMA table_info({self.table})")
             lcols = {r[1] for r in cur.fetchall()}
             for name, typ in [
@@ -330,7 +330,7 @@ class LocationDB(_DB):
         Returns the stored timestamp.
         """
         self.ensure_table()
-        user_id = packet.get("from")
+        node_id = packet.get("from")
         decoded = packet.get("decoded", {})
         pos = decoded.get("position", {})
         timestamp = int(packet.get("rxTime", int(time.time())))
@@ -371,11 +371,11 @@ class LocationDB(_DB):
             cur = con.cursor()
             cur.execute(
                 f"INSERT INTO {self.table} ("
-                "user_id, timestamp, latitude, longitude, latitude_i, longitude_i, altitude, location_source, altitude_source, "
+                "node_id, timestamp, latitude, longitude, latitude_i, longitude_i, altitude, location_source, altitude_source, "
                 "pos_time, pos_timestamp, pos_timestamp_ms_adjust, altitude_hae, altitude_geoidal_separation, pdop, hdop, vdop, gps_accuracy, "
                 "ground_speed, ground_track, fix_quality, fix_type, sats_in_view, sensor_id, next_update, seq_number, precision_bits, precision"
                 ") VALUES (?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?) "
-                "ON CONFLICT(user_id) DO UPDATE SET "
+                "ON CONFLICT(node_id) DO UPDATE SET "
                 "timestamp=excluded.timestamp, latitude=excluded.latitude, longitude=excluded.longitude, "
                 "latitude_i=excluded.latitude_i, longitude_i=excluded.longitude_i, altitude=excluded.altitude, "
                 "location_source=excluded.location_source, altitude_source=excluded.altitude_source, "
@@ -386,7 +386,7 @@ class LocationDB(_DB):
                 "fix_type=excluded.fix_type, sats_in_view=excluded.sats_in_view, sensor_id=excluded.sensor_id, next_update=excluded.next_update, "
                 "seq_number=excluded.seq_number, precision_bits=excluded.precision_bits, precision=excluded.precision",
                 (
-                    user_id,
+                    node_id,
                     timestamp,
                     lat,
                     lon,
@@ -419,32 +419,32 @@ class LocationDB(_DB):
             con.commit()
         return timestamp
 
-    def latest_for_user(self, user_id: Union[int, str]) -> Optional[Tuple[int, float, float]]:
+    def latest_for_user(self, node_id: Union[int, str]) -> Optional[Tuple[int, float, float]]:
         self.ensure_table()
         with self.connect() as con:
             cur = con.cursor()
             cur.execute(
-                f"SELECT timestamp, latitude, longitude FROM {self.table} WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1",
-                (user_id,),
+                f"SELECT timestamp, latitude, longitude FROM {self.table} WHERE node_id = ? ORDER BY timestamp DESC LIMIT 1",
+                (node_id,),
             )
             row = cur.fetchone()
             return (row[0], row[1], row[2]) if row else None
 
     def history_for_user(
-        self, user_id: Union[int, str], since_ts: Optional[int] = None, limit: int = 1000
+        self, node_id: Union[int, str], since_ts: Optional[int] = None, limit: int = 1000
     ) -> List[Tuple[int, float, float]]:
         self.ensure_table()
         with self.connect() as con:
             cur = con.cursor()
             if since_ts:
                 cur.execute(
-                    f"SELECT timestamp, latitude, longitude FROM {self.table} WHERE user_id = ? AND timestamp >= ? ORDER BY timestamp ASC LIMIT ?",
-                    (user_id, since_ts, limit),
+                    f"SELECT timestamp, latitude, longitude FROM {self.table} WHERE node_id = ? AND timestamp >= ? ORDER BY timestamp ASC LIMIT ?",
+                    (node_id, since_ts, limit),
                 )
             else:
                 cur.execute(
-                    f"SELECT timestamp, latitude, longitude FROM {self.table} WHERE user_id = ? ORDER BY timestamp ASC LIMIT ?",
-                    (user_id, limit),
+                    f"SELECT timestamp, latitude, longitude FROM {self.table} WHERE node_id = ? ORDER BY timestamp ASC LIMIT ?",
+                    (node_id, limit),
                 )
             return [(r[0], r[1], r[2]) for r in cur.fetchall()]
 
@@ -453,13 +453,13 @@ class TelemetryDB(_DB):
     """Storage for Meshtastic telemetry metrics.
 
     Creates typed tables for each common metrics variant:
-      - <owner>_telemetry_device(user_id, timestamp, battery_level, voltage, channel_utilization, air_util_tx, uptime_seconds)
-      - <owner>_telemetry_power(user_id, timestamp, ch1_voltage, ch1_current, ch2_voltage, ch2_current, ch3_voltage, ch3_current, ch4_voltage, ch4_current, ch5_voltage, ch5_current, ch6_voltage, ch6_current, ch7_voltage, ch7_current, ch8_voltage, ch8_current)
-      - <owner>_telemetry_environment(user_id, timestamp, temperature, relative_humidity, barometric_pressure, gas_resistance, voltage, current, iaq, distance, lux, white_lux, ir_lux, uv_lux, wind_direction, wind_speed, weight, wind_gust, wind_lull, radiation, rainfall_1h, rainfall_24h, soil_moisture, soil_temperature)
-      - <owner>_telemetry_air_quality(user_id, timestamp, pm10_standard, pm25_standard, pm100_standard, pm10_environmental, pm25_environmental, pm100_environmental, particles_03um, particles_05um, particles_10um, particles_25um, particles_50um, particles_100um, co2, co2_temperature, co2_humidity, form_formaldehyde, form_humidity, form_temperature, pm40_standard, particles_40um, pm_temperature, pm_humidity, pm_voc_idx, pm_nox_idx, particles_tps)
-      - <owner>_telemetry_local_stats(user_id, timestamp, uptime_seconds, channel_utilization, air_util_tx, num_packets_tx, num_packets_rx, num_packets_rx_bad, num_online_nodes, num_total_nodes, num_rx_dupe, num_tx_relay, num_tx_relay_canceled, heap_total_bytes, heap_free_bytes, num_tx_dropped)
-      - <owner>_telemetry_health(user_id, timestamp, heart_bpm, spO2, temperature)
-      - <owner>_telemetry_host(user_id, timestamp, uptime_seconds, freemem_bytes, diskfree1_bytes, diskfree2_bytes, diskfree3_bytes, load1, load5, load15, user_string)
+      - <owner>_telemetry_device(node_id, timestamp, battery_level, voltage, channel_utilization, air_util_tx, uptime_seconds)
+      - <owner>_telemetry_power(node_id, timestamp, ch1_voltage, ch1_current, ch2_voltage, ch2_current, ch3_voltage, ch3_current, ch4_voltage, ch4_current, ch5_voltage, ch5_current, ch6_voltage, ch6_current, ch7_voltage, ch7_current, ch8_voltage, ch8_current)
+      - <owner>_telemetry_environment(node_id, timestamp, temperature, relative_humidity, barometric_pressure, gas_resistance, voltage, current, iaq, distance, lux, white_lux, ir_lux, uv_lux, wind_direction, wind_speed, weight, wind_gust, wind_lull, radiation, rainfall_1h, rainfall_24h, soil_moisture, soil_temperature)
+      - <owner>_telemetry_air_quality(node_id, timestamp, pm10_standard, pm25_standard, pm100_standard, pm10_environmental, pm25_environmental, pm100_environmental, particles_03um, particles_05um, particles_10um, particles_25um, particles_50um, particles_100um, co2, co2_temperature, co2_humidity, form_formaldehyde, form_humidity, form_temperature, pm40_standard, particles_40um, pm_temperature, pm_humidity, pm_voc_idx, pm_nox_idx, particles_tps)
+      - <owner>_telemetry_local_stats(node_id, timestamp, uptime_seconds, channel_utilization, air_util_tx, num_packets_tx, num_packets_rx, num_packets_rx_bad, num_online_nodes, num_total_nodes, num_rx_dupe, num_tx_relay, num_tx_relay_canceled, heap_total_bytes, heap_free_bytes, num_tx_dropped)
+      - <owner>_telemetry_health(node_id, timestamp, heart_bpm, spO2, temperature)
+      - <owner>_telemetry_host(node_id, timestamp, uptime_seconds, freemem_bytes, diskfree1_bytes, diskfree2_bytes, diskfree3_bytes, load1, load5, load15, user_string)
     """
 
     @property
@@ -495,7 +495,7 @@ class TelemetryDB(_DB):
             cur = con.cursor()
             cur.execute(
                 f"CREATE TABLE IF NOT EXISTS {self.table_device} ("
-                "user_id TEXT,"
+                "node_id TEXT,"
                 "timestamp INTEGER,"
                 "battery_level REAL,"
                 "voltage REAL,"
@@ -506,7 +506,7 @@ class TelemetryDB(_DB):
             )
             cur.execute(
                 f"CREATE TABLE IF NOT EXISTS {self.table_power} ("
-                "user_id TEXT,"
+                "node_id TEXT,"
                 "timestamp INTEGER,"
                 "ch1_voltage REAL,"
                 "ch1_current REAL,"
@@ -529,7 +529,7 @@ class TelemetryDB(_DB):
             # Environment
             cur.execute(
                 f"CREATE TABLE IF NOT EXISTS {self.table_environment} ("
-                "user_id TEXT,"
+                "node_id TEXT,"
                 "timestamp INTEGER,"
                 "temperature REAL,"
                 "relative_humidity REAL,"
@@ -559,7 +559,7 @@ class TelemetryDB(_DB):
             # Air Quality
             cur.execute(
                 f"CREATE TABLE IF NOT EXISTS {self.table_air_quality} ("
-                "user_id TEXT,"
+                "node_id TEXT,"
                 "timestamp INTEGER,"
                 "pm10_standard INTEGER,"
                 "pm25_standard INTEGER,"
@@ -592,7 +592,7 @@ class TelemetryDB(_DB):
             # Local Stats
             cur.execute(
                 f"CREATE TABLE IF NOT EXISTS {self.table_local_stats} ("
-                "user_id TEXT,"
+                "node_id TEXT,"
                 "timestamp INTEGER,"
                 "uptime_seconds INTEGER,"
                 "channel_utilization REAL,"
@@ -614,7 +614,7 @@ class TelemetryDB(_DB):
             # Health
             cur.execute(
                 f"CREATE TABLE IF NOT EXISTS {self.table_health} ("
-                "user_id TEXT,"
+                "node_id TEXT,"
                 "timestamp INTEGER,"
                 "heart_bpm INTEGER,"
                 "spO2 INTEGER,"
@@ -625,7 +625,7 @@ class TelemetryDB(_DB):
             # Host
             cur.execute(
                 f"CREATE TABLE IF NOT EXISTS {self.table_host} ("
-                "user_id TEXT,"
+                "node_id TEXT,"
                 "timestamp INTEGER,"
                 "uptime_seconds INTEGER,"
                 "freemem_bytes INTEGER,"
@@ -640,45 +640,45 @@ class TelemetryDB(_DB):
             )
             # Helpful indices
             cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_td_user_time ON {self.table_device} (user_id, timestamp)"
+                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_td_user_time ON {self.table_device} (node_id, timestamp)"
             )
             cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_tp_user_time ON {self.table_power} (user_id, timestamp)"
+                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_tp_user_time ON {self.table_power} (node_id, timestamp)"
             )
             cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_tenv_user_time ON {self.table_environment} (user_id, timestamp)"
+                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_tenv_user_time ON {self.table_environment} (node_id, timestamp)"
             )
             cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_taq_user_time ON {self.table_air_quality} (user_id, timestamp)"
+                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_taq_user_time ON {self.table_air_quality} (node_id, timestamp)"
             )
             cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_tls_user_time ON {self.table_local_stats} (user_id, timestamp)"
+                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_tls_user_time ON {self.table_local_stats} (node_id, timestamp)"
             )
             cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_th_user_time ON {self.table_health} (user_id, timestamp)"
+                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_th_user_time ON {self.table_health} (node_id, timestamp)"
             )
             cur.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_thost_user_time ON {self.table_host} (user_id, timestamp)"
+                f"CREATE INDEX IF NOT EXISTS idx_{self.owner}_thost_user_time ON {self.table_host} (node_id, timestamp)"
             )
-            # Add unique indices for overwrite-on-insert (upsert) per user_id
+            # Add unique indices for overwrite-on-insert (upsert) per node_id
             cur.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_td_user ON {self.table_device} (user_id)"
+                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_td_user ON {self.table_device} (node_id)"
             )
-            cur.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_tp_user ON {self.table_power} (user_id)")
+            cur.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_tp_user ON {self.table_power} (node_id)")
             cur.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_tenv_user ON {self.table_environment} (user_id)"
-            )
-            cur.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_taq_user ON {self.table_air_quality} (user_id)"
+                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_tenv_user ON {self.table_environment} (node_id)"
             )
             cur.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_tls_user ON {self.table_local_stats} (user_id)"
+                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_taq_user ON {self.table_air_quality} (node_id)"
             )
             cur.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_th_user ON {self.table_health} (user_id)"
+                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_tls_user ON {self.table_local_stats} (node_id)"
             )
             cur.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_thost_user ON {self.table_host} (user_id)"
+                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_th_user ON {self.table_health} (node_id)"
+            )
+            cur.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_thost_user ON {self.table_host} (node_id)"
             )
             con.commit()
 
@@ -688,7 +688,7 @@ class TelemetryDB(_DB):
         Returns the stored timestamp.
         """
         self.ensure_tables()
-        user_id = packet.get("from")
+        node_id = packet.get("from")
         decoded = packet.get("decoded", {})
         telem = decoded.get("telemetry", {})
         ts = int(telem.get("time") or packet.get("rxTime") or time.time())
@@ -706,13 +706,13 @@ class TelemetryDB(_DB):
 
             if isinstance(device, dict):
                 cur.execute(
-                    f"INSERT INTO {self.table_device} (user_id, timestamp, battery_level, voltage, channel_utilization, air_util_tx, uptime_seconds) "
+                    f"INSERT INTO {self.table_device} (node_id, timestamp, battery_level, voltage, channel_utilization, air_util_tx, uptime_seconds) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET "
+                    "ON CONFLICT(node_id) DO UPDATE SET "
                     "timestamp=excluded.timestamp, battery_level=excluded.battery_level, voltage=excluded.voltage, "
                     "channel_utilization=excluded.channel_utilization, air_util_tx=excluded.air_util_tx, uptime_seconds=excluded.uptime_seconds",
                     (
-                        user_id,
+                        node_id,
                         ts,
                         device.get("batteryLevel"),
                         device.get("voltage"),
@@ -724,16 +724,16 @@ class TelemetryDB(_DB):
 
             if isinstance(power, dict):
                 cur.execute(
-                    f"INSERT INTO {self.table_power} (user_id, timestamp, ch1_voltage, ch1_current, ch2_voltage, ch2_current, ch3_voltage, ch3_current, ch4_voltage, ch4_current, ch5_voltage, ch5_current, ch6_voltage, ch6_current, ch7_voltage, ch7_current, ch8_voltage, ch8_current) "
+                    f"INSERT INTO {self.table_power} (node_id, timestamp, ch1_voltage, ch1_current, ch2_voltage, ch2_current, ch3_voltage, ch3_current, ch4_voltage, ch4_current, ch5_voltage, ch5_current, ch6_voltage, ch6_current, ch7_voltage, ch7_current, ch8_voltage, ch8_current) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET "
+                    "ON CONFLICT(node_id) DO UPDATE SET "
                     "timestamp=excluded.timestamp, ch1_voltage=excluded.ch1_voltage, ch1_current=excluded.ch1_current, "
                     "ch2_voltage=excluded.ch2_voltage, ch2_current=excluded.ch2_current, ch3_voltage=excluded.ch3_voltage, ch3_current=excluded.ch3_current, "
                     "ch4_voltage=excluded.ch4_voltage, ch4_current=excluded.ch4_current, ch5_voltage=excluded.ch5_voltage, ch5_current=excluded.ch5_current, "
                     "ch6_voltage=excluded.ch6_voltage, ch6_current=excluded.ch6_current, ch7_voltage=excluded.ch7_voltage, ch7_current=excluded.ch7_current, "
                     "ch8_voltage=excluded.ch8_voltage, ch8_current=excluded.ch8_current",
                     (
-                        user_id,
+                        node_id,
                         ts,
                         power.get("ch1Voltage"),
                         power.get("ch1Current"),
@@ -756,16 +756,16 @@ class TelemetryDB(_DB):
 
             if isinstance(env, dict):
                 cur.execute(
-                    f"INSERT INTO {self.table_environment} (user_id, timestamp, temperature, relative_humidity, barometric_pressure, gas_resistance, voltage, current, iaq, distance, lux, white_lux, ir_lux, uv_lux, wind_direction, wind_speed, weight, wind_gust, wind_lull, radiation, rainfall_1h, rainfall_24h, soil_moisture, soil_temperature) "
+                    f"INSERT INTO {self.table_environment} (node_id, timestamp, temperature, relative_humidity, barometric_pressure, gas_resistance, voltage, current, iaq, distance, lux, white_lux, ir_lux, uv_lux, wind_direction, wind_speed, weight, wind_gust, wind_lull, radiation, rainfall_1h, rainfall_24h, soil_moisture, soil_temperature) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET "
+                    "ON CONFLICT(node_id) DO UPDATE SET "
                     "timestamp=excluded.timestamp, temperature=excluded.temperature, relative_humidity=excluded.relative_humidity, "
                     "barometric_pressure=excluded.barometric_pressure, gas_resistance=excluded.gas_resistance, voltage=excluded.voltage, current=excluded.current, "
                     "iaq=excluded.iaq, distance=excluded.distance, lux=excluded.lux, white_lux=excluded.white_lux, ir_lux=excluded.ir_lux, uv_lux=excluded.uv_lux, "
                     "wind_direction=excluded.wind_direction, wind_speed=excluded.wind_speed, weight=excluded.weight, wind_gust=excluded.wind_gust, wind_lull=excluded.wind_lull, "
                     "radiation=excluded.radiation, rainfall_1h=excluded.rainfall_1h, rainfall_24h=excluded.rainfall_24h, soil_moisture=excluded.soil_moisture, soil_temperature=excluded.soil_temperature",
                     (
-                        user_id,
+                        node_id,
                         ts,
                         env.get("temperature"),
                         env.get("relativeHumidity") if "relativeHumidity" in env else env.get("relative_humidity"),
@@ -798,9 +798,9 @@ class TelemetryDB(_DB):
 
             if isinstance(aq, dict):
                 cur.execute(
-                    f"INSERT INTO {self.table_air_quality} (user_id, timestamp, pm10_standard, pm25_standard, pm100_standard, pm10_environmental, pm25_environmental, pm100_environmental, particles_03um, particles_05um, particles_10um, particles_25um, particles_50um, particles_100um, co2, co2_temperature, co2_humidity, form_formaldehyde, form_humidity, form_temperature, pm40_standard, particles_40um, pm_temperature, pm_humidity, pm_voc_idx, pm_nox_idx, particles_tps) "
+                    f"INSERT INTO {self.table_air_quality} (node_id, timestamp, pm10_standard, pm25_standard, pm100_standard, pm10_environmental, pm25_environmental, pm100_environmental, particles_03um, particles_05um, particles_10um, particles_25um, particles_50um, particles_100um, co2, co2_temperature, co2_humidity, form_formaldehyde, form_humidity, form_temperature, pm40_standard, particles_40um, pm_temperature, pm_humidity, pm_voc_idx, pm_nox_idx, particles_tps) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET "
+                    "ON CONFLICT(node_id) DO UPDATE SET "
                     "timestamp=excluded.timestamp, pm10_standard=excluded.pm10_standard, pm25_standard=excluded.pm25_standard, pm100_standard=excluded.pm100_standard, "
                     "pm10_environmental=excluded.pm10_environmental, pm25_environmental=excluded.pm25_environmental, pm100_environmental=excluded.pm100_environmental, "
                     "particles_03um=excluded.particles_03um, particles_05um=excluded.particles_05um, particles_10um=excluded.particles_10um, particles_25um=excluded.particles_25um, "
@@ -808,7 +808,7 @@ class TelemetryDB(_DB):
                     "form_formaldehyde=excluded.form_formaldehyde, form_humidity=excluded.form_humidity, form_temperature=excluded.form_temperature, pm40_standard=excluded.pm40_standard, "
                     "particles_40um=excluded.particles_40um, pm_temperature=excluded.pm_temperature, pm_humidity=excluded.pm_humidity, pm_voc_idx=excluded.pm_voc_idx, pm_nox_idx=excluded.pm_nox_idx, particles_tps=excluded.particles_tps",
                     (
-                        user_id,
+                        node_id,
                         ts,
                         aq.get("pm10Standard") if "pm10Standard" in aq else aq.get("pm10_standard"),
                         aq.get("pm25Standard") if "pm25Standard" in aq else aq.get("pm25_standard"),
@@ -840,16 +840,16 @@ class TelemetryDB(_DB):
 
             if isinstance(ls, dict):
                 cur.execute(
-                    f"INSERT INTO {self.table_local_stats} (user_id, timestamp, uptime_seconds, channel_utilization, air_util_tx, num_packets_tx, num_packets_rx, num_packets_rx_bad, num_online_nodes, num_total_nodes, num_rx_dupe, num_tx_relay, num_tx_relay_canceled, heap_total_bytes, heap_free_bytes, num_tx_dropped) "
+                    f"INSERT INTO {self.table_local_stats} (node_id, timestamp, uptime_seconds, channel_utilization, air_util_tx, num_packets_tx, num_packets_rx, num_packets_rx_bad, num_online_nodes, num_total_nodes, num_rx_dupe, num_tx_relay, num_tx_relay_canceled, heap_total_bytes, heap_free_bytes, num_tx_dropped) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET "
+                    "ON CONFLICT(node_id) DO UPDATE SET "
                     "timestamp=excluded.timestamp, uptime_seconds=excluded.uptime_seconds, channel_utilization=excluded.channel_utilization, "
                     "air_util_tx=excluded.air_util_tx, num_packets_tx=excluded.num_packets_tx, num_packets_rx=excluded.num_packets_rx, "
                     "num_packets_rx_bad=excluded.num_packets_rx_bad, num_online_nodes=excluded.num_online_nodes, num_total_nodes=excluded.num_total_nodes, "
                     "num_rx_dupe=excluded.num_rx_dupe, num_tx_relay=excluded.num_tx_relay, num_tx_relay_canceled=excluded.num_tx_relay_canceled, "
                     "heap_total_bytes=excluded.heap_total_bytes, heap_free_bytes=excluded.heap_free_bytes, num_tx_dropped=excluded.num_tx_dropped",
                     (
-                        user_id,
+                        node_id,
                         ts,
                         ls.get("uptimeSeconds") if "uptimeSeconds" in ls else ls.get("uptime_seconds"),
                         ls.get("channelUtilization") if "channelUtilization" in ls else ls.get("channel_utilization"),
@@ -874,12 +874,12 @@ class TelemetryDB(_DB):
 
             if isinstance(health, dict):
                 cur.execute(
-                    f"INSERT INTO {self.table_health} (user_id, timestamp, heart_bpm, spO2, temperature) "
+                    f"INSERT INTO {self.table_health} (node_id, timestamp, heart_bpm, spO2, temperature) "
                     "VALUES (?,?,?,?,?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET "
+                    "ON CONFLICT(node_id) DO UPDATE SET "
                     "timestamp=excluded.timestamp, heart_bpm=excluded.heart_bpm, spO2=excluded.spO2, temperature=excluded.temperature",
                     (
-                        user_id,
+                        node_id,
                         ts,
                         health.get("heartBpm") if "heartBpm" in health else health.get("heart_bpm"),
                         health.get("spO2") if "spO2" in health else health.get("spO2"),
@@ -889,14 +889,14 @@ class TelemetryDB(_DB):
 
             if isinstance(host, dict):
                 cur.execute(
-                    f"INSERT INTO {self.table_host} (user_id, timestamp, uptime_seconds, freemem_bytes, diskfree1_bytes, diskfree2_bytes, diskfree3_bytes, load1, load5, load15, user_string) "
+                    f"INSERT INTO {self.table_host} (node_id, timestamp, uptime_seconds, freemem_bytes, diskfree1_bytes, diskfree2_bytes, diskfree3_bytes, load1, load5, load15, user_string) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET "
+                    "ON CONFLICT(node_id) DO UPDATE SET "
                     "timestamp=excluded.timestamp, uptime_seconds=excluded.uptime_seconds, freemem_bytes=excluded.freemem_bytes, "
                     "diskfree1_bytes=excluded.diskfree1_bytes, diskfree2_bytes=excluded.diskfree2_bytes, diskfree3_bytes=excluded.diskfree3_bytes, "
                     "load1=excluded.load1, load5=excluded.load5, load15=excluded.load15, user_string=excluded.user_string",
                     (
-                        user_id,
+                        node_id,
                         ts,
                         host.get("uptimeSeconds") if "uptimeSeconds" in host else host.get("uptime_seconds"),
                         host.get("freememBytes") if "freememBytes" in host else host.get("freemem_bytes"),
@@ -922,26 +922,26 @@ class MessageDB(_DB):
         return f'"{table_name}"'
 
     def ensure_channel_table(self, channel: Union[int, str]) -> None:
-        schema = "user_id TEXT," "message_text TEXT," "timestamp INTEGER"
+        schema = "node_id TEXT," "message_text TEXT," "timestamp INTEGER"
         with self.connect() as con:
             cur = con.cursor()
             cur.execute(f"CREATE TABLE IF NOT EXISTS {self._table_for_channel(channel)} ({schema})")
             con.commit()
 
-    def save_message(self, channel: Union[int, str], user_id: Union[int, str], message_text: str) -> int:
+    def save_message(self, channel: Union[int, str], node_id: Union[int, str], message_text: str) -> int:
         self.ensure_channel_table(channel)
         ts = int(time.time())
         with self.connect() as con:
             cur = con.cursor()
             cur.execute(
-                f"INSERT INTO {self._table_for_channel(channel)} (user_id, message_text, timestamp) VALUES (?, ?, ?)",
-                (str(user_id), message_text, ts),
+                f"INSERT INTO {self._table_for_channel(channel)} (node_id, message_text, timestamp) VALUES (?, ?, ?)",
+                (str(node_id), message_text, ts),
             )
             con.commit()
         return ts
 
     def update_ack_nak(
-        self, channel: Union[int, str], timestamp: int, user_id: Union[int, str], message: str, ack: str
+        self, channel: Union[int, str], timestamp: int, node_id: Union[int, str], message: str, ack: str
     ) -> None:
         # Deprecated: ack_type column has been removed; keep as no-op for backward compatibility.
         logging.debug("update_ack_nak called but ack_type support is removed; ignoring.")
@@ -971,9 +971,9 @@ class MessageDB(_DB):
 
                 # Build a SELECT based on available columns
                 if has_ack:
-                    cur.execute(f"SELECT user_id, message_text, timestamp FROM {quoted}")
+                    cur.execute(f"SELECT node_id, message_text, timestamp FROM {quoted}")
                 else:
-                    cur.execute(f"SELECT user_id, message_text, timestamp FROM {quoted}")
+                    cur.execute(f"SELECT node_id, message_text, timestamp FROM {quoted}")
                 rows = cur.fetchall()
 
                 # Infer channel name
@@ -1008,10 +1008,10 @@ class MessageDB(_DB):
 
 
 def save_message_to_db(
-    channel: str, user_id: str, message_text: str, *, owner_node_num: Union[int, str], db_path: Optional[str] = None
+    channel: str, node_id: str, message_text: str, *, owner_node_num: Union[int, str], db_path: Optional[str] = None
 ) -> Optional[int]:
     try:
-        return MessageDB(owner_node_num, db_path).save_message(channel, user_id, message_text)
+        return MessageDB(owner_node_num, db_path).save_message(channel, node_id, message_text)
     except sqlite3.Error as e:
         logging.error(f"SQLite error in save_message_to_db: {e}")
     except Exception as e:
@@ -1026,7 +1026,7 @@ def update_ack_nak(
     ack: str,
     *,
     owner_node_num: Union[int, str],
-    user_id: Union[int, str],
+    node_id: Union[int, str],
     db_path: Optional[str] = None,
 ) -> None:
     try:
@@ -1037,10 +1037,10 @@ def update_ack_nak(
 
 
 def get_name_from_database(
-    user_id: int, kind: str = "long", *, owner_node_num: Union[int, str], db_path: Optional[str] = None
+    node_id: int, kind: str = "long", *, owner_node_num: Union[int, str], db_path: Optional[str] = None
 ) -> str:
     try:
-        return NodeDB(owner_node_num, db_path).get_name(user_id, kind)
+        return NodeDB(owner_node_num, db_path).get_name(node_id, kind)
     except sqlite3.Error as e:
         logging.error(f"SQLite error in get_name_from_database: {e}")
         return "Unknown"
@@ -1053,10 +1053,10 @@ def maybe_store_nodeinfo_in_db(
     packet: Dict[str, object], *, owner_node_num: Union[int, str], db_path: Optional[str] = None
 ) -> None:
     try:
-        user_id = packet["from"]
+        node_id = packet["from"]
         user = packet["decoded"]["user"]
         NodeDB(owner_node_num, db_path).upsert(
-            user_id=user_id,
+            node_id=node_id,
             long_name=user.get("longName", ""),
             short_name=user.get("shortName", ""),
             macaddr=user.get("macaddr", ""),
@@ -1131,8 +1131,8 @@ def store_text_message_packet(
         if not text:
             return None
 
-        user_id = packet.get("from")
-        return MessageDB(owner_node_num, db_path).save_message(channel, user_id, text)
+        node_id = packet.get("from")
+        return MessageDB(owner_node_num, db_path).save_message(channel, node_id, text)
     except sqlite3.Error as e:
         logging.error(f"SQLite error in store_text_message_packet: {e}")
     except Exception as e:
@@ -1250,7 +1250,7 @@ def handle_packet(
         # Always update last_heard (and SNR if provided)
         try:
             NodeDB(owner_node_num, db_path).upsert(
-                user_id=packet.get("from"),
+                node_id=packet.get("from"),
                 last_heard=packet.get("rxTime"),
                 snr=packet.get("snr"),
             )
@@ -1289,9 +1289,9 @@ def handle_packet(
 # ------------------------------
 
 
-def get_long_name(user_id: Union[int, str], *, owner_node_num: Union[int, str], db_path: Optional[str] = None) -> str:
-    return NodeDB(owner_node_num, db_path).get_name(int(user_id), kind="long")
+def get_long_name(node_id: Union[int, str], *, owner_node_num: Union[int, str], db_path: Optional[str] = None) -> str:
+    return NodeDB(owner_node_num, db_path).get_name(int(node_id), kind="long")
 
 
-def get_short_name(user_id: Union[int, str], *, owner_node_num: Union[int, str], db_path: Optional[str] = None) -> str:
-    return NodeDB(owner_node_num, db_path).get_name(int(user_id), kind="short")
+def get_short_name(node_id: Union[int, str], *, owner_node_num: Union[int, str], db_path: Optional[str] = None) -> str:
+    return NodeDB(owner_node_num, db_path).get_name(int(node_id), kind="short")

@@ -17,7 +17,7 @@ import json
 from datetime import datetime
 from typing import Optional, Dict, Any
 
-from meshdb.db_handler import (
+from meshdb import (
     NodeDB,
     LocationDB,
     TelemetryDB,
@@ -34,13 +34,13 @@ def _fmt_ts(ts: Optional[int]) -> str:
         return str(ts)
 
 
-def _latest_location(ldb: LocationDB, user_id: int) -> Optional[Dict[str, Any]]:
+def _latest_location(ldb: LocationDB, node_id: int) -> Optional[Dict[str, Any]]:
     with ldb.connect() as con:
         cur = con.cursor()
         cur.execute(
             f"SELECT timestamp, latitude, longitude, altitude, location_source FROM {ldb.table} "
-            "WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1",
-            (user_id,),
+            "WHERE node_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (node_id,),
         )
         row = cur.fetchone()
         if not row:
@@ -54,13 +54,13 @@ def _latest_location(ldb: LocationDB, user_id: int) -> Optional[Dict[str, Any]]:
         }
 
 
-def _latest_device_telemetry(tdb: TelemetryDB, user_id: int) -> Optional[Dict[str, Any]]:
+def _latest_device_telemetry(tdb: TelemetryDB, node_id: int) -> Optional[Dict[str, Any]]:
     with tdb.connect() as con:
         cur = con.cursor()
         cur.execute(
             f"SELECT timestamp, battery_level, voltage, channel_utilization, air_util_tx, uptime_seconds "
-            f"FROM {tdb.table_device} WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1",
-            (user_id,),
+            f"FROM {tdb.table_device} WHERE node_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (node_id,),
         )
         row = cur.fetchone()
         if not row:
@@ -75,13 +75,13 @@ def _latest_device_telemetry(tdb: TelemetryDB, user_id: int) -> Optional[Dict[st
         }
 
 
-def _latest_power_telemetry(tdb: TelemetryDB, user_id: int) -> Optional[Dict[str, Any]]:
+def _latest_power_telemetry(tdb: TelemetryDB, node_id: int) -> Optional[Dict[str, Any]]:
     with tdb.connect() as con:
         cur = con.cursor()
         cur.execute(
             f"SELECT timestamp, ch1_voltage, ch1_current, ch2_voltage, ch2_current, ch3_voltage, ch3_current "
-            f"FROM {tdb.table_power} WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1",
-            (user_id,),
+            f"FROM {tdb.table_power} WHERE node_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (node_id,),
         )
         row = cur.fetchone()
         if not row:
@@ -157,7 +157,7 @@ def main() -> None:
     with ndb.connect() as con:
         cur = con.cursor()
         cur.execute(
-            f"SELECT user_id, long_name, short_name, last_heard, hops_away, snr FROM {ndb.table} "
+            f"SELECT node_id, long_name, short_name, last_heard, hops_away, snr FROM {ndb.table} "
             "ORDER BY (last_heard IS NULL), last_heard DESC"
         )
         rows = cur.fetchall()
@@ -167,15 +167,15 @@ def main() -> None:
         return
 
     node_list = []
-    for user_id, long_name, short_name, last_heard, hops_away, snr in rows:
-        uid = int(user_id) if isinstance(user_id, (int, str)) else user_id
+    for node_id, long_name, short_name, last_heard, hops_away, snr in rows:
+        uid = int(node_id) if isinstance(node_id, (int, str)) else node_id
         name_long = long_name or ndb.get_name(uid, "long")
         name_short = short_name or ndb.get_name(uid, "short")
         loc = _latest_location(ldb, uid)
         dev = _latest_device_telemetry(tdb, uid)
         pwr = _latest_power_telemetry(tdb, uid)
         node_data = {
-            "user_id": uid,
+            "node_id": uid,
             "long_name": name_long,
             "short_name": name_short,
             "last_heard": last_heard,
@@ -193,7 +193,7 @@ def main() -> None:
             cur = con.cursor()
             # Environment telemetry
             cur.execute(
-                f"SELECT * FROM {tdb.table_environment} WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1", (uid,)
+                f"SELECT * FROM {tdb.table_environment} WHERE node_id = ? ORDER BY timestamp DESC LIMIT 1", (uid,)
             )
             env_row = cur.fetchone()
             if env_row:
@@ -202,7 +202,7 @@ def main() -> None:
 
             # Air quality telemetry
             cur.execute(
-                f"SELECT * FROM {tdb.table_air_quality} WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1", (uid,)
+                f"SELECT * FROM {tdb.table_air_quality} WHERE node_id = ? ORDER BY timestamp DESC LIMIT 1", (uid,)
             )
             aq_row = cur.fetchone()
             if aq_row:
@@ -210,14 +210,14 @@ def main() -> None:
                 node_data["telemetry_air_quality"] = dict(zip(columns, aq_row))
 
             # Health telemetry
-            cur.execute(f"SELECT * FROM {tdb.table_health} WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1", (uid,))
+            cur.execute(f"SELECT * FROM {tdb.table_health} WHERE node_id = ? ORDER BY timestamp DESC LIMIT 1", (uid,))
             health_row = cur.fetchone()
             if health_row:
                 columns = [d[0] for d in cur.description]
                 node_data["telemetry_health"] = dict(zip(columns, health_row))
 
             # Host telemetry
-            cur.execute(f"SELECT * FROM {tdb.table_host} WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1", (uid,))
+            cur.execute(f"SELECT * FROM {tdb.table_host} WHERE node_id = ? ORDER BY timestamp DESC LIMIT 1", (uid,))
             host_row = cur.fetchone()
             if host_row:
                 columns = [d[0] for d in cur.description]
