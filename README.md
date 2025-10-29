@@ -4,7 +4,13 @@ A lightweight Python library for storing Meshtastic node, telemetry, and message
 
 ## Installation
 
-Install from source within a virtual environment:
+You can install `meshdb` directly from PyPI using pip:
+
+```bash
+pip install meshdb
+```
+
+Or install from source within a virtual environment:
 
 ```bash
 git clone https://github.com/pdxlocations/meshdb.git
