@@ -4,7 +4,6 @@ import json
 from typing import List
 from pubsub import pub
 
-import meshtastic.serial_interface
 import meshdb
 
 """
@@ -56,18 +55,32 @@ meshdb.set_default_db_path(DB_BASE)
 print(f"[meshdb] DB base set to: {DB_BASE}")
 
 # -----------------------------
-# 3) Connect to device (Serial)
+# 3) Connect (serial/tcp/udp)
 # -----------------------------
-# You can also use meshtastic.tcp_interface.TCPInterface(hostname="127.0.0.1:4403")
-interface = meshtastic.serial_interface.SerialInterface()
+# Set these directly in your script; no env vars required.
+TRANSPORT = "udp"  # "serial" | "tcp" | "udp"
+SERIAL_PORT = None  # e.g. "/dev/tty.usbmodem1234"
+TCP_HOST = "127.0.0.1:4403"
+VIRTUAL_NODE = meshdb.VirtualNodeConfig(
+    node_id="!89abcdef",
+    long_name="MeshDB Virtual Node",
+    short_name="MDB",
+    hw_model=255,
+    channel="MeshOregon",
+    key="AQ==",
+    mcast_group="224.0.0.69",
+    mcast_port=4403,
+)
 
-# Resolve connected device node number AND sync its NodeDB into our local DB
-CONNECTED_NODE_NUM = meshdb.get_connected_device_node_num(interface)
-if CONNECTED_NODE_NUM is None:
-    print("[meshdb] Warning: Could not resolve connected device node number; falling back to 0.")
-    CONNECTED_NODE_NUM = 0
-else:
-    print(f"[meshdb] Connected device node number: {CONNECTED_NODE_NUM}")
+connection = meshdb.connect(
+    transport=TRANSPORT,
+    serial_port=SERIAL_PORT,
+    tcp_host=TCP_HOST,
+    virtual_node=VIRTUAL_NODE,
+)
+interface = connection.interface
+CONNECTED_NODE_NUM = connection.owner_node_num
+print(f"[meshdb] transport={connection.transport} connected_node_num={CONNECTED_NODE_NUM}")
 
 # -----------------------------
 # 4) Helper to pretty print JSON
@@ -116,23 +129,32 @@ print(f"hw_model for 'SenseRAT' → {val}")
 # -----------------------------
 
 
-def on_receive(packet=None, interface=None):
+def on_receive(packet=None, interface=None, addr=None):
     """Store NODEINFO/POSITION/TELEMETRY/TEXT_MESSAGE into the DB automatically."""
     try:
-        result = meshdb.handle_packet(packet, node_database_number=CONNECTED_NODE_NUM)
+        normalized = meshdb.normalize_packet(packet, connection.transport)
+        result = meshdb.handle_packet(normalized, node_database_number=CONNECTED_NODE_NUM)
 
         # Example: derive readable sender names
-        sender = packet.get("from")
+        sender = normalized.get("from")
         ln = meshdb.get_long_name(sender, node_database_number=CONNECTED_NODE_NUM)
         sn = meshdb.get_short_name(sender, node_database_number=CONNECTED_NODE_NUM)
-        print(f"saved={result} from={sender} long='{ln}' short='{sn}' port={packet.get('decoded',{}).get('portnum')}")
+        print(
+            f"saved={result} from={sender} long='{ln}' short='{sn}' "
+            f"port={normalized.get('decoded', {}).get('portnum')}"
+        )
 
     except Exception as e:
         print(f"on_receive error: {e}")
 
 
 # Hook PubSub topic and idle forever
-pub.subscribe(on_receive, "meshtastic.receive")
-print("\n[meshdb] Listening for packets… (Ctrl+C to exit)")
-while True:
-    time.sleep(1)
+pub.subscribe(on_receive, connection.receive_topic)
+print(f"\n[meshdb] Listening on topic '{connection.receive_topic}'… (Ctrl+C to exit)")
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    pass
+finally:
+    meshdb.close_connection(connection)

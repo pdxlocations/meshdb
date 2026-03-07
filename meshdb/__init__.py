@@ -15,3 +15,12 @@ from .db_lookup import (
     get_node,
     get_node_metric,
 )
+
+from .network import (
+    MeshConnection,
+    VirtualNodeConfig,
+    connect,
+    connect_from_env,
+    close_connection,
+    normalize_packet,
+)

@@ -45,6 +45,53 @@ packet = {
 handle_packet(packet, node_database_number=12345678)
 ```
 
+## Network Connection Options (Serial/TCP/Virtual Node)
+
+`meshdb` now includes a connection helper that supports:
+- `serial` (default)
+- `tcp`
+- `udp` virtual-node mode
+
+```python
+import meshdb
+
+conn = meshdb.connect(
+    transport="udp",
+    virtual_node=meshdb.VirtualNodeConfig(
+        node_id="!89abcdef",
+        long_name="MeshDB Virtual Node",
+        short_name="MDB",
+        channel="LongFast",
+        key="AQ==",
+        mcast_group="224.0.0.69",
+        mcast_port=4403,
+    ),
+)
+print(conn.transport, conn.owner_node_num)
+```
+
+Optional environment-based shortcut is still available:
+
+```bash
+export MESHDB_TRANSPORT=udp
+export MESHDB_VNODE_ID=!89abcdef
+export MESHDB_VNODE_LONG_NAME="MeshDB Virtual Node"
+export MESHDB_VNODE_SHORT_NAME=MDB
+export MESHDB_MUDP_GROUP=224.0.0.69
+export MESHDB_MUDP_PORT=4403
+export MESHDB_MUDP_CHANNEL=LongFast
+export MESHDB_MUDP_KEY=AQ==
+```
+
+Then call:
+
+```python
+conn = meshdb.connect_from_env()
+```
+
+When receiving packets from `udp`, use `meshdb.normalize_packet(packet, "udp")`
+before passing to `meshdb.handle_packet(...)`.
+
 ## Viewing Stored Data
 
 You can run:
