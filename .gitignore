@@ -1,3 +1,4 @@
 meshdb/__pycache__/*
 *.db
 .DS_Store
+examples/__pycache__/*

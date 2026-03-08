@@ -1,6 +1,6 @@
 [project]
 name = "meshdb"
-version = "0.1.6"
+version = "0.1.7"
 description = "A python package for managing a Meshtastic node database."
 authors = [
     {name = "Ben Lipsey",email = "ben@pdxlocations.com"}

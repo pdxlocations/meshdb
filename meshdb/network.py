@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
@@ -74,6 +73,17 @@ def _connect_udp(
     return stream
 
 
+def _seed_virtual_node_info(owner_node_num: int, cfg: VirtualNodeConfig) -> None:
+    from meshdb.db_handler import NodeDB
+
+    NodeDB(owner_node_num).upsert(
+        node_num=owner_node_num,
+        long_name=cfg.long_name,
+        short_name=cfg.short_name,
+        hw_model=cfg.hw_model,
+    )
+
+
 def connect(
     *,
     transport: str = "serial",
@@ -117,6 +127,7 @@ def connect(
             hw_model=int(cfg.hw_model),
         )
         owner = _parse_node_id_to_num(node_id)
+        _seed_virtual_node_info(owner, cfg)
         return MeshConnection(
             transport="udp",
             interface=interface,
@@ -125,28 +136,6 @@ def connect(
         )
 
     raise ValueError(f"Unsupported transport={transport!r}. Use serial, tcp, or udp.")
-
-
-def connect_from_env() -> MeshConnection:
-    transport = os.environ.get("MESHDB_TRANSPORT", "serial").strip().lower()
-    if transport in ("udp", "mudp"):
-        return connect(
-            transport="udp",
-            virtual_node=VirtualNodeConfig(
-                node_id=os.environ.get("MESHDB_VNODE_ID", "!ffffffff"),
-                long_name=os.environ.get("MESHDB_VNODE_LONG_NAME", "meshdb virtual node"),
-                short_name=os.environ.get("MESHDB_VNODE_SHORT_NAME", "MDB"),
-                hw_model=int(os.environ.get("MESHDB_VNODE_HW_MODEL", "255")),
-                channel=os.environ.get("MESHDB_MUDP_CHANNEL", "LongFast"),
-                key=os.environ.get("MESHDB_MUDP_KEY", "AQ=="),
-                mcast_group=os.environ.get("MESHDB_MUDP_GROUP", "224.0.0.69"),
-                mcast_port=int(os.environ.get("MESHDB_MUDP_PORT", "4403")),
-            ),
-        )
-    if transport == "tcp":
-        return connect(transport="tcp", tcp_host=os.environ.get("MESHDB_TCP_HOST", "127.0.0.1:4403"))
-    return connect(transport="serial", serial_port=os.environ.get("MESHDB_SERIAL_PORT"))
-
 
 def close_connection(connection: MeshConnection) -> None:
     try:

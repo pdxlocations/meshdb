@@ -1079,6 +1079,38 @@ def maybe_store_nodeinfo_in_db(
         logging.error(f"Unexpected error in maybe_store_nodeinfo_in_db: {e}")
 
 
+def sync_owner_nodeinfo(
+    node_database_number: Union[int, str], info: Dict[str, object], db_path: Optional[str] = None
+) -> None:
+    """Merge the connected node's own info into the DB.
+
+    Meshtastic interfaces often expose fresher owner metadata via `getMyNodeInfo()`
+    than what is present in the downloaded NodeDB snapshot.
+    """
+    if not isinstance(info, dict):
+        return
+
+    user = info.get("user") if isinstance(info.get("user"), dict) else {}
+    num = info.get("num")
+    if num is None:
+        return
+
+    NodeDB(node_database_number, db_path).upsert(
+        node_num=num,
+        long_name=user.get("longName"),
+        short_name=user.get("shortName"),
+        macaddr=user.get("macaddr"),
+        hw_model=user.get("hwModel"),
+        role=user.get("role"),
+        is_licensed=user.get("isLicensed") if isinstance(user, dict) else None,
+        public_key=user.get("publicKey"),
+        is_unmessagable=user.get("isUnmessagable"),
+        last_heard=info.get("lastHeard"),
+        hops_away=info.get("hopsAway"),
+        snr=info.get("snr"),
+    )
+
+
 def store_location_packet(
     packet: Dict[str, object], *, node_database_number: Union[int, str], db_path: Optional[str] = None
 ) -> Optional[int]:
@@ -1164,6 +1196,10 @@ def get_connected_device_node_num(iface) -> Optional[int]:
         if isinstance(info, dict):
             num = info.get("num")
             if isinstance(num, int):
+                try:
+                    sync_owner_nodeinfo(num, info, db_path=None)
+                except Exception as e:
+                    logging.debug(f"sync_owner_nodeinfo skipped: {e}")
                 # Best-effort: pull the device NodeDB and merge locally
                 try:
                     sync_nodes_from_interface(num, iface, db_path=None)

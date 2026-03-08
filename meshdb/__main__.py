@@ -1,230 +1,102 @@
 #!/usr/bin/env python3
-"""No-arg CLI: print nodes in the DB with latest telemetry and position.
+"""CLI: listen for Meshtastic packets and persist them into meshdb.
 
 Usage:
   python -m meshdb
-
-Environment (optional):
-  MESHTASTIC_CONNECTED_NODE  Connected device node number (int). If absent, inferred.
-  MESHTASTIC_DB              DB base path (dir or file pattern). If absent, uses CWD.
-  (Back-compat: MESHTASTIC_OWNER/OWNER are also honored.)
+  python -m meshdb --db ./data --transport tcp --tcp-host 127.0.0.1:4403
+  python -m meshdb --transport udp --node-id !89abcdef --channel LongFast
 """
 from __future__ import annotations
 
+import argparse
 import os
-import re
-import json
-from datetime import datetime
-from typing import Optional, Dict, Any
+import time
 
 from meshdb import (
-    NodeDB,
-    LocationDB,
-    TelemetryDB,
+    VirtualNodeConfig,
+    close_connection,
+    connect,
+    get_long_name,
+    get_short_name,
+    handle_packet,
+    normalize_packet,
     set_default_db_path,
 )
 
 
-def _fmt_ts(ts: Optional[int]) -> str:
-    if not ts:
-        return "-"
-    try:
-        return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return str(ts)
-
-
-def _latest_location(ldb: LocationDB, node_num: int) -> Optional[Dict[str, Any]]:
-    with ldb.connect() as con:
-        cur = con.cursor()
-        cur.execute(
-            f"SELECT timestamp, latitude, longitude, altitude, location_source FROM {ldb.table} "
-            "WHERE node_num = ? ORDER BY timestamp DESC LIMIT 1",
-            (node_num,),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        return {
-            "timestamp": row[0],
-            "latitude": row[1],
-            "longitude": row[2],
-            "altitude": row[3],
-            "location_source": row[4],
-        }
-
-
-def _latest_device_telemetry(tdb: TelemetryDB, node_num: int) -> Optional[Dict[str, Any]]:
-    with tdb.connect() as con:
-        cur = con.cursor()
-        cur.execute(
-            f"SELECT timestamp, battery_level, voltage, channel_utilization, air_util_tx, uptime_seconds "
-            f"FROM {tdb.table_device} WHERE node_num = ? ORDER BY timestamp DESC LIMIT 1",
-            (node_num,),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        return {
-            "timestamp": row[0],
-            "battery": row[1],
-            "voltage": row[2],
-            "ch_util": row[3],
-            "air_util": row[4],
-            "uptime": row[5],
-        }
-
-
-def _latest_power_telemetry(tdb: TelemetryDB, node_num: int) -> Optional[Dict[str, Any]]:
-    with tdb.connect() as con:
-        cur = con.cursor()
-        cur.execute(
-            f"SELECT timestamp, ch1_voltage, ch1_current, ch2_voltage, ch2_current, ch3_voltage, ch3_current "
-            f"FROM {tdb.table_power} WHERE node_num = ? ORDER BY timestamp DESC LIMIT 1",
-            (node_num,),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        return {
-            "timestamp": row[0],
-            "ch1_v": row[1],
-            "ch1_i": row[2],
-            "ch2_v": row[3],
-            "ch2_i": row[4],
-            "ch3_v": row[5],
-            "ch3_i": row[6],
-        }
-
-
-def _infer_owner_candidates(db_hint: str | None) -> list[int]:
-    path = db_hint or os.getcwd()
-    path = os.path.abspath(os.path.expanduser(path))
-    if not os.path.exists(path):
-        return []
-    dirpath = path if os.path.isdir(path) else (os.path.dirname(path) or ".")
-    out: set[int] = set()
-    try:
-        for fn in os.listdir(dirpath):
-            # Patterns:
-            #   12345678.db
-            #   something.12345678.sqlite3
-            #   something.12345678.db
-            #   12345678.sqlite3
-            m = re.search(r"(?:^|\.)((?:\d){4,})(?=\.(?:db|sqlite3)$)", fn)
-            if m:
-                try:
-                    out.add(int(m.group(1)))
-                except Exception:
-                    pass
-    except Exception:
-        return []
-    return sorted(out)
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Listen for packets and persist them into meshdb.")
+    parser.add_argument("--db", dest="db_base", default=os.getcwd(), help="DB base path. Defaults to the working directory.")
+    parser.add_argument(
+        "--transport",
+        choices=["serial", "tcp", "udp"],
+        default="serial",
+        help="Connection transport. Defaults to serial.",
+    )
+    parser.add_argument("--serial-port", default=None, help="Serial device path for serial transport.")
+    parser.add_argument("--tcp-host", default="127.0.0.1:4403", help="TCP host:port for tcp transport.")
+    parser.add_argument("--owner", dest="owner_node_num", type=int, default=None, help="Override DB owner node number.")
+    parser.add_argument("--node-id", default="!ffffffff", help="Virtual node id for udp transport.")
+    parser.add_argument("--long-name", default="meshdb virtual node", help="Virtual node long name for udp transport.")
+    parser.add_argument("--short-name", default="MDB", help="Virtual node short name for udp transport.")
+    parser.add_argument("--hw-model", type=int, default=255, help="Virtual node hardware model for udp transport.")
+    parser.add_argument("--channel", default="LongFast", help="Virtual node channel name for udp transport.")
+    parser.add_argument("--key", default="AQ==", help="Virtual node channel key for udp transport.")
+    parser.add_argument("--mcast-group", default="224.0.0.69", help="UDP multicast group for udp transport.")
+    parser.add_argument("--mcast-port", type=int, default=4403, help="UDP multicast port for udp transport.")
+    return parser.parse_args()
 
 
 def start() -> None:
-    db_base = os.environ.get("MESHTASTIC_DB")
-    set_default_db_path(db_base)
+    from pubsub import pub
 
-    # Prefer new env var, fall back to legacy names
-    connected_env = os.environ.get("MESHTASTIC_CONNECTED_NODE")
-    connected = int(connected_env) if connected_env and connected_env.isdigit() else None
+    args = _parse_args()
+    set_default_db_path(args.db_base)
 
-    if connected is None:
-        candidates = _infer_owner_candidates(db_base)
-        if len(candidates) == 1:
-            connected = candidates[0]
-        else:
-            msg = [
-                "Connected device node number not provided. Set MESHTASTIC_CONNECTED_NODE,",
-                "or place a single per-node DB in the target directory.",
-            ]
-            if candidates:
-                msg.append(f" Found candidate nodes: {', '.join(map(str, candidates))}")
-            print("".join(msg))
-            return
+    connection = connect(
+        transport=args.transport,
+        serial_port=args.serial_port,
+        tcp_host=args.tcp_host,
+        virtual_node=VirtualNodeConfig(
+            node_id=args.node_id,
+            long_name=args.long_name,
+            short_name=args.short_name,
+            hw_model=args.hw_model,
+            channel=args.channel,
+            key=args.key,
+            mcast_group=args.mcast_group,
+            mcast_port=args.mcast_port,
+        ),
+    )
+    owner_node_num = args.owner_node_num if args.owner_node_num is not None else connection.owner_node_num
 
-    ndb = NodeDB(connected, db_path=db_base)
-    ldb = LocationDB(connected, db_path=db_base)
-    tdb = TelemetryDB(connected, db_path=db_base)
-
-    # Ensure tables exist so SELECTs don't fail on fresh DBs
-    ndb.ensure_table()
-    ldb.ensure_table()
-    tdb.ensure_tables()
-
-    # Fetch all nodes
-    with ndb.connect() as con:
-        cur = con.cursor()
-        cur.execute(
-            f"SELECT node_num, long_name, short_name, last_heard, hops_away, snr FROM {ndb.table} "
-            "ORDER BY (last_heard IS NULL), last_heard DESC"
-        )
-        rows = cur.fetchall()
-
-    if not rows:
-        print("(no nodes in database)")
-        return
-
-    node_list = []
-    for node_num, long_name, short_name, last_heard, hops_away, snr in rows:
-        uid = int(node_num) if isinstance(node_num, (int, str)) else node_num
-        name_long = long_name or ndb.get_name(uid, "long")
-        name_short = short_name or ndb.get_name(uid, "short")
-        loc = _latest_location(ldb, uid)
-        dev = _latest_device_telemetry(tdb, uid)
-        pwr = _latest_power_telemetry(tdb, uid)
-        node_data = {
-            "node_num": uid,
-            "long_name": name_long,
-            "short_name": name_short,
-            "last_heard": last_heard,
-            "hops_away": hops_away,
-            "snr": snr,
-        }
-        if loc:
-            node_data["location"] = loc
-        if dev:
-            node_data["telemetry_device"] = dev
-        if pwr:
-            node_data["telemetry_power"] = pwr
-
-        with tdb.connect() as con:
-            cur = con.cursor()
-            # Environment telemetry
-            cur.execute(
-                f"SELECT * FROM {tdb.table_environment} WHERE node_num = ? ORDER BY timestamp DESC LIMIT 1", (uid,)
+    def on_receive(packet=None, interface=None, addr=None) -> None:
+        try:
+            normalized = normalize_packet(packet, connection.transport)
+            result = handle_packet(normalized, node_database_number=owner_node_num)
+            sender = normalized.get("from")
+            long_name = get_long_name(sender, node_database_number=owner_node_num) if sender is not None else "Unknown"
+            short_name = get_short_name(sender, node_database_number=owner_node_num) if sender is not None else "Unknown"
+            port = normalized.get("decoded", {}).get("portnum")
+            print(
+                f"saved={result} from={sender} long='{long_name}' short='{short_name}' port={port}"
             )
-            env_row = cur.fetchone()
-            if env_row:
-                columns = [d[0] for d in cur.description]
-                node_data["telemetry_environment"] = dict(zip(columns, env_row))
+        except Exception as exc:
+            print(f"on_receive error: {exc}")
 
-            # Air quality telemetry
-            cur.execute(
-                f"SELECT * FROM {tdb.table_air_quality} WHERE node_num = ? ORDER BY timestamp DESC LIMIT 1", (uid,)
-            )
-            aq_row = cur.fetchone()
-            if aq_row:
-                columns = [d[0] for d in cur.description]
-                node_data["telemetry_air_quality"] = dict(zip(columns, aq_row))
+    pub.subscribe(on_receive, connection.receive_topic)
+    print(
+        f"[meshdb] listening transport={connection.transport} owner={owner_node_num} "
+        f"db_base={args.db_base} topic={connection.receive_topic}"
+    )
 
-            # Health telemetry
-            cur.execute(f"SELECT * FROM {tdb.table_health} WHERE node_num = ? ORDER BY timestamp DESC LIMIT 1", (uid,))
-            health_row = cur.fetchone()
-            if health_row:
-                columns = [d[0] for d in cur.description]
-                node_data["telemetry_health"] = dict(zip(columns, health_row))
-
-            # Host telemetry
-            cur.execute(f"SELECT * FROM {tdb.table_host} WHERE node_num = ? ORDER BY timestamp DESC LIMIT 1", (uid,))
-            host_row = cur.fetchone()
-            if host_row:
-                columns = [d[0] for d in cur.description]
-                node_data["telemetry_host"] = dict(zip(columns, host_row))
-
-        node_list.append(node_data)
-    print(json.dumps(node_list, indent=2))
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        close_connection(connection)
 
 
 if __name__ == "__main__":

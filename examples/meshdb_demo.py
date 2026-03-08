@@ -30,7 +30,7 @@ What this demo shows:
 #   "~/meshdb_data"            → creates <owner>.db files in that directory
 #   "./mesh.sqlite3"          → creates mesh.<owner>.sqlite3 alongside this script
 #   None or ""                 → current working directory
-DB_BASE = os.environ.get("MESHDB_BASE", "~/Meshtastic/github/pdxlocations/meshdb/")
+DB_BASE = os.getcwd()
 
 # Nodes to query for examples. You can use any of:
 #   - "!deadbeef" (full hex id)
@@ -46,7 +46,7 @@ TARGETS: List[object] = [
 ]
 
 # A single metric to fetch for demonstration
-DEMO_METRIC = os.environ.get("MESHDB_METRIC", "hw_model")  # e.g., "battery_level"
+DEMO_METRIC = "hw_model"  # e.g., "battery_level"
 
 # -----------------------------
 # 2) Configure MeshDB base path
@@ -58,7 +58,7 @@ print(f"[meshdb] DB base set to: {DB_BASE}")
 # 3) Connect (serial/tcp/udp)
 # -----------------------------
 # Set these directly in your script; no env vars required.
-TRANSPORT = "udp"  # "serial" | "tcp" | "udp"
+TRANSPORT = "serial"  # "serial" | "tcp" | "udp"
 SERIAL_PORT = None  # e.g. "/dev/tty.usbmodem1234"
 TCP_HOST = "127.0.0.1:4403"
 VIRTUAL_NODE = meshdb.VirtualNodeConfig(

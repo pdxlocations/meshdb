@@ -20,7 +20,6 @@ from .network import (
     MeshConnection,
     VirtualNodeConfig,
     connect,
-    connect_from_env,
     close_connection,
     normalize_packet,
 )

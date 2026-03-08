@@ -70,42 +70,35 @@ conn = meshdb.connect(
 print(conn.transport, conn.owner_node_num)
 ```
 
-Optional environment-based shortcut is still available:
-
-```bash
-export MESHDB_TRANSPORT=udp
-export MESHDB_VNODE_ID=!89abcdef
-export MESHDB_VNODE_LONG_NAME="MeshDB Virtual Node"
-export MESHDB_VNODE_SHORT_NAME=MDB
-export MESHDB_MUDP_GROUP=224.0.0.69
-export MESHDB_MUDP_PORT=4403
-export MESHDB_MUDP_CHANNEL=LongFast
-export MESHDB_MUDP_KEY=AQ==
-```
-
-Then call:
-
-```python
-conn = meshdb.connect_from_env()
-```
-
 When receiving packets from `udp`, use `meshdb.normalize_packet(packet, "udp")`
 before passing to `meshdb.handle_packet(...)`.
 
-## Viewing Stored Data
+## CLI Listener
 
 You can run:
 
 ```bash
-python -m meshdb --db ./data
+meshdb
+meshdb --db ./data --transport tcp --tcp-host 127.0.0.1:4403
+meshdb --transport udp --node-id !89abcdef --channel LongFast
 ```
 
-This prints a JSON summary of all known nodes and their latest telemetry, if available.
+This connects to the mesh, listens for new packets, and persists them into the owner database until you stop it with `Ctrl+C`.
+
+The CLI is configured with explicit arguments rather than environment variables. For `udp` transport, you can also pass:
+- `--long-name`
+- `--short-name`
+- `--hw-model`
+- `--key`
+- `--mcast-group`
+- `--mcast-port`
 
 ## Lookups in Code
 
 ```python
 import meshdb
+
+meshdb.set_default_db_path("./data")
 
 node = meshdb.get_node(12345678, owner_node_num=12345678)
 battery = meshdb.get_node_metric("TestNode", "battery_level", owner_node_num=12345678)
