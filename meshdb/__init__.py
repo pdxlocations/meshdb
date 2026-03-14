@@ -4,6 +4,7 @@ from .db_handler import (
     get_long_name,
     get_short_name,
     get_connected_device_node_num,
+    sync_nodes_from_interface,
     NodeDB,
     LocationDB,
     TelemetryDB,

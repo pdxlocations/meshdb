@@ -93,6 +93,21 @@ The CLI is configured with explicit arguments rather than environment variables.
 - `--mcast-group`
 - `--mcast-port`
 
+## Owner Database
+
+`meshdb` stores data per owner node. The `owner_node_num` value selects which owner's SQLite database and table set you are reading or writing.
+
+That matters because the same remote node can appear differently depending on which local node observed it. Signal, last-heard time, hops, and even the available node list are owner-specific.
+
+If you have a live Meshtastic interface and want to import its current NodeDB snapshot, you can do:
+
+```python
+import meshdb
+
+count = meshdb.sync_nodes_from_interface(owner_node_num, interface)
+print(f"imported {count} nodes")
+```
+
 ## Lookups in Code
 
 ```python

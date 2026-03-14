@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
@@ -158,19 +159,67 @@ def normalize_packet(packet: Any, transport: str) -> Dict[str, Any]:
             return packet
         raise TypeError(f"Expected dict packet for transport={transport}, got {type(packet).__name__}")
 
-    from meshtastic import portnums_pb2, protocols
+    from meshtastic import mesh_pb2, portnums_pb2, protocols
     from google.protobuf.json_format import MessageToDict
 
     out: Dict[str, Any] = {}
     from_value = getattr(packet, "from", None)
     if from_value is not None:
         out["from"] = int(from_value)
+    to_value = getattr(packet, "to", None)
+    if to_value is not None:
+        out["to"] = int(to_value)
+    packet_id = getattr(packet, "id", None)
+    if packet_id is not None:
+        out["id"] = int(packet_id)
+    channel = getattr(packet, "channel", None)
+    if channel is not None:
+        out["channel"] = int(channel)
     rx_time = getattr(packet, "rx_time", None)
     if rx_time is not None:
         out["rxTime"] = int(rx_time)
     rx_snr = getattr(packet, "rx_snr", None)
     if rx_snr is not None:
         out["snr"] = float(rx_snr)
+    rx_rssi = getattr(packet, "rx_rssi", None)
+    if rx_rssi is not None:
+        out["rxRssi"] = int(rx_rssi)
+    hop_limit = getattr(packet, "hop_limit", None)
+    if hop_limit is not None:
+        out["hopLimit"] = int(hop_limit)
+    want_ack = getattr(packet, "want_ack", None)
+    if want_ack is not None:
+        out["wantAck"] = bool(want_ack)
+    priority = getattr(packet, "priority", None)
+    if priority:
+        out["priority"] = mesh_pb2.MeshPacket.Priority.Name(int(priority))
+    delayed = getattr(packet, "delayed", None)
+    if delayed:
+        out["delayed"] = mesh_pb2.MeshPacket.Delayed.Name(int(delayed))
+    via_mqtt = getattr(packet, "via_mqtt", None)
+    if via_mqtt is not None:
+        out["viaMqtt"] = bool(via_mqtt)
+    hop_start = getattr(packet, "hop_start", None)
+    if hop_start is not None:
+        out["hopStart"] = int(hop_start)
+    public_key = getattr(packet, "public_key", b"") or b""
+    if public_key:
+        out["publicKey"] = base64.b64encode(bytes(public_key)).decode("ascii")
+    pki_encrypted = getattr(packet, "pki_encrypted", None)
+    if pki_encrypted is not None:
+        out["pkiEncrypted"] = bool(pki_encrypted)
+    next_hop = getattr(packet, "next_hop", None)
+    if next_hop is not None:
+        out["nextHop"] = int(next_hop)
+    relay_node = getattr(packet, "relay_node", None)
+    if relay_node is not None:
+        out["relayNode"] = int(relay_node)
+    tx_after = getattr(packet, "tx_after", None)
+    if tx_after is not None:
+        out["txAfter"] = int(tx_after)
+    transport_mechanism = getattr(packet, "transport_mechanism", None)
+    if transport_mechanism:
+        out["transportMechanism"] = mesh_pb2.MeshPacket.TransportMechanism.Name(int(transport_mechanism))
 
     decoded_dict: Dict[str, Any] = {}
     decoded_msg = getattr(packet, "decoded", None)

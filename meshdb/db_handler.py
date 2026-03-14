@@ -22,6 +22,7 @@ import sqlite3
 import time
 import logging
 from datetime import datetime
+from collections import OrderedDict
 
 from meshdb.utils import decimal_to_hex
 
@@ -57,6 +58,83 @@ def _default_db_path(base_path: Optional[str], node_database_number: Union[int, 
     if ext:
         return f"{root}.{owner}{ext}"
     return f"{base_path}.{owner}.sqlite3"
+
+
+PACKET_META_COLUMNS: List[Tuple[str, str]] = [
+    ("to_node", "INTEGER"),
+    ("packet_id", "INTEGER"),
+    ("channel", "INTEGER"),
+    ("rx_snr", "REAL"),
+    ("rx_rssi", "INTEGER"),
+    ("hop_limit", "INTEGER"),
+    ("want_ack", "INTEGER"),
+    ("priority", "TEXT"),
+    ("delayed", "TEXT"),
+    ("via_mqtt", "INTEGER"),
+    ("hop_start", "INTEGER"),
+    ("public_key", "TEXT"),
+    ("pki_encrypted", "INTEGER"),
+    ("next_hop", "INTEGER"),
+    ("relay_node", "INTEGER"),
+    ("tx_after", "INTEGER"),
+    ("transport_mechanism", "TEXT"),
+]
+PACKET_META_COLUMN_NAMES = [name for name, _ in PACKET_META_COLUMNS]
+PACKET_META_SCHEMA = ", ".join(f"{name} {typ}" for name, typ in PACKET_META_COLUMNS)
+
+
+def _ensure_packet_meta_columns(cur, table: str) -> None:
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = {r[1] for r in cur.fetchall()}
+    for name, typ in PACKET_META_COLUMNS:
+        if name not in cols:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+
+
+def _packet_meta_values(packet: Dict[str, object]) -> Tuple[object, ...]:
+    def as_int_bool(value: object) -> Optional[int]:
+        if value is None:
+            return None
+        return int(bool(value))
+
+    return (
+        packet.get("to"),
+        packet.get("id"),
+        packet.get("channel"),
+        packet.get("snr"),
+        packet.get("rxRssi"),
+        packet.get("hopLimit"),
+        as_int_bool(packet.get("wantAck")),
+        packet.get("priority"),
+        packet.get("delayed"),
+        as_int_bool(packet.get("viaMqtt")),
+        packet.get("hopStart"),
+        packet.get("publicKey"),
+        as_int_bool(packet.get("pkiEncrypted")),
+        packet.get("nextHop"),
+        packet.get("relayNode"),
+        packet.get("txAfter"),
+        packet.get("transportMechanism"),
+    )
+
+
+def _upsert_node_scoped_packet(
+    cur,
+    table: str,
+    node_num: object,
+    timestamp: int,
+    field_values: "OrderedDict[str, object]",
+    packet: Dict[str, object],
+) -> None:
+    columns = ["node_num", "timestamp", *field_values.keys(), *PACKET_META_COLUMN_NAMES]
+    placeholders = ", ".join("?" for _ in columns)
+    update_clause = ", ".join(f"{column}=excluded.{column}" for column in columns if column != "node_num")
+    values = (node_num, timestamp, *field_values.values(), *_packet_meta_values(packet))
+    cur.execute(
+        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(node_num) DO UPDATE SET {update_clause}",
+        values,
+    )
 
 
 class _DB:
@@ -284,7 +362,8 @@ class LocationDB(_DB):
             "next_update INTEGER,"  # field 21
             "seq_number INTEGER,"  # field 22
             "precision_bits INTEGER,"  # field 23
-            "precision INTEGER"  # legacy compatibility
+            "precision INTEGER,"  # legacy compatibility
+            f"{PACKET_META_SCHEMA}"
         )
         with self.connect() as con:
             cur = con.cursor()
@@ -322,6 +401,7 @@ class LocationDB(_DB):
             ]:
                 if name not in lcols:
                     cur.execute(f"ALTER TABLE {self.table} ADD COLUMN {name} {typ}")
+            _ensure_packet_meta_columns(cur, self.table)
             con.commit()
 
     def save_packet(self, packet: Dict[str, object]) -> int:
@@ -369,52 +449,42 @@ class LocationDB(_DB):
         prec_bits = g(pos, "precisionBits", "precision_bits")
         with self.connect() as con:
             cur = con.cursor()
-            cur.execute(
-                f"INSERT INTO {self.table} ("
-                "node_num, timestamp, latitude, longitude, latitude_i, longitude_i, altitude, location_source, altitude_source, "
-                "pos_time, pos_timestamp, pos_timestamp_ms_adjust, altitude_hae, altitude_geoidal_separation, pdop, hdop, vdop, gps_accuracy, "
-                "ground_speed, ground_track, fix_quality, fix_type, sats_in_view, sensor_id, next_update, seq_number, precision_bits, precision"
-                ") VALUES (?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?) "
-                "ON CONFLICT(node_num) DO UPDATE SET "
-                "timestamp=excluded.timestamp, latitude=excluded.latitude, longitude=excluded.longitude, "
-                "latitude_i=excluded.latitude_i, longitude_i=excluded.longitude_i, altitude=excluded.altitude, "
-                "location_source=excluded.location_source, altitude_source=excluded.altitude_source, "
-                "pos_time=excluded.pos_time, pos_timestamp=excluded.pos_timestamp, pos_timestamp_ms_adjust=excluded.pos_timestamp_ms_adjust, "
-                "altitude_hae=excluded.altitude_hae, altitude_geoidal_separation=excluded.altitude_geoidal_separation, "
-                "pdop=excluded.pdop, hdop=excluded.hdop, vdop=excluded.vdop, gps_accuracy=excluded.gps_accuracy, "
-                "ground_speed=excluded.ground_speed, ground_track=excluded.ground_track, fix_quality=excluded.fix_quality, "
-                "fix_type=excluded.fix_type, sats_in_view=excluded.sats_in_view, sensor_id=excluded.sensor_id, next_update=excluded.next_update, "
-                "seq_number=excluded.seq_number, precision_bits=excluded.precision_bits, precision=excluded.precision",
-                (
-                    node_num,
-                    timestamp,
-                    lat,
-                    lon,
-                    lat_i,
-                    lon_i,
-                    alt,
-                    loc_src,
-                    alt_src,
-                    pos_time,
-                    pos_ts,
-                    pos_ts_adj,
-                    alt_hae,
-                    alt_geo_sep,
-                    pdop,
-                    hdop,
-                    vdop,
-                    gps_acc,
-                    gspd,
-                    gtrk,
-                    fix_q,
-                    fix_t,
-                    sats,
-                    sensor_id,
-                    next_upd,
-                    seq_no,
-                    prec_bits,
-                    prec_bits,
+            _upsert_node_scoped_packet(
+                cur,
+                self.table,
+                node_num,
+                timestamp,
+                OrderedDict(
+                    [
+                        ("latitude", lat),
+                        ("longitude", lon),
+                        ("latitude_i", lat_i),
+                        ("longitude_i", lon_i),
+                        ("altitude", alt),
+                        ("location_source", loc_src),
+                        ("altitude_source", alt_src),
+                        ("pos_time", pos_time),
+                        ("pos_timestamp", pos_ts),
+                        ("pos_timestamp_ms_adjust", pos_ts_adj),
+                        ("altitude_hae", alt_hae),
+                        ("altitude_geoidal_separation", alt_geo_sep),
+                        ("pdop", pdop),
+                        ("hdop", hdop),
+                        ("vdop", vdop),
+                        ("gps_accuracy", gps_acc),
+                        ("ground_speed", gspd),
+                        ("ground_track", gtrk),
+                        ("fix_quality", fix_q),
+                        ("fix_type", fix_t),
+                        ("sats_in_view", sats),
+                        ("sensor_id", sensor_id),
+                        ("next_update", next_upd),
+                        ("seq_number", seq_no),
+                        ("precision_bits", prec_bits),
+                        ("precision", prec_bits),
+                    ]
                 ),
+                packet,
             )
             con.commit()
         return timestamp
@@ -501,7 +571,8 @@ class TelemetryDB(_DB):
                 "voltage REAL,"
                 "channel_utilization REAL,"
                 "air_util_tx REAL,"
-                "uptime_seconds INTEGER"
+                "uptime_seconds INTEGER,"
+                f"{PACKET_META_SCHEMA}"
                 ")"
             )
             cur.execute(
@@ -523,7 +594,8 @@ class TelemetryDB(_DB):
                 "ch7_voltage REAL,"
                 "ch7_current REAL,"
                 "ch8_voltage REAL,"
-                "ch8_current REAL"
+                "ch8_current REAL,"
+                f"{PACKET_META_SCHEMA}"
                 ")"
             )
             # Environment
@@ -552,7 +624,8 @@ class TelemetryDB(_DB):
                 "rainfall_1h REAL,"
                 "rainfall_24h REAL,"
                 "soil_moisture INTEGER,"
-                "soil_temperature REAL"
+                "soil_temperature REAL,"
+                f"{PACKET_META_SCHEMA}"
                 ")"
             )
 
@@ -585,7 +658,8 @@ class TelemetryDB(_DB):
                 "pm_humidity REAL,"
                 "pm_voc_idx REAL,"
                 "pm_nox_idx REAL,"
-                "particles_tps REAL"
+                "particles_tps REAL,"
+                f"{PACKET_META_SCHEMA}"
                 ")"
             )
 
@@ -607,7 +681,8 @@ class TelemetryDB(_DB):
                 "num_tx_relay_canceled INTEGER,"
                 "heap_total_bytes INTEGER,"
                 "heap_free_bytes INTEGER,"
-                "num_tx_dropped INTEGER"
+                "num_tx_dropped INTEGER,"
+                f"{PACKET_META_SCHEMA}"
                 ")"
             )
 
@@ -618,7 +693,8 @@ class TelemetryDB(_DB):
                 "timestamp INTEGER,"
                 "heart_bpm INTEGER,"
                 "spO2 INTEGER,"
-                "temperature REAL"
+                "temperature REAL,"
+                f"{PACKET_META_SCHEMA}"
                 ")"
             )
 
@@ -635,7 +711,8 @@ class TelemetryDB(_DB):
                 "load1 INTEGER,"
                 "load5 INTEGER,"
                 "load15 INTEGER,"
-                "user_string TEXT"
+                "user_string TEXT,"
+                f"{PACKET_META_SCHEMA}"
                 ")"
             )
             # Helpful indices
@@ -682,6 +759,16 @@ class TelemetryDB(_DB):
             cur.execute(
                 f"CREATE UNIQUE INDEX IF NOT EXISTS uniq_{self.owner}_thost_user ON {self.table_host} (node_num)"
             )
+            for table in (
+                self.table_device,
+                self.table_power,
+                self.table_environment,
+                self.table_air_quality,
+                self.table_local_stats,
+                self.table_health,
+                self.table_host,
+            ):
+                _ensure_packet_meta_columns(cur, table)
             con.commit()
 
     def save_packet(self, packet: Dict[str, object]) -> int:
@@ -707,209 +794,188 @@ class TelemetryDB(_DB):
             cur = con.cursor()
 
             if isinstance(device, dict):
-                cur.execute(
-                    f"INSERT INTO {self.table_device} (node_num, timestamp, battery_level, voltage, channel_utilization, air_util_tx, uptime_seconds) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(node_num) DO UPDATE SET "
-                    "timestamp=excluded.timestamp, battery_level=excluded.battery_level, voltage=excluded.voltage, "
-                    "channel_utilization=excluded.channel_utilization, air_util_tx=excluded.air_util_tx, uptime_seconds=excluded.uptime_seconds",
-                    (
-                        node_num,
-                        ts,
-                        device.get("batteryLevel"),
-                        device.get("voltage"),
-                        device.get("channelUtilization"),
-                        device.get("airUtilTx"),
-                        device.get("uptimeSeconds"),
+                _upsert_node_scoped_packet(
+                    cur,
+                    self.table_device,
+                    node_num,
+                    ts,
+                    OrderedDict(
+                        [
+                            ("battery_level", device.get("batteryLevel")),
+                            ("voltage", device.get("voltage")),
+                            ("channel_utilization", device.get("channelUtilization")),
+                            ("air_util_tx", device.get("airUtilTx")),
+                            ("uptime_seconds", device.get("uptimeSeconds")),
+                        ]
                     ),
+                    packet,
                 )
 
             if isinstance(power, dict):
-                cur.execute(
-                    f"INSERT INTO {self.table_power} (node_num, timestamp, ch1_voltage, ch1_current, ch2_voltage, ch2_current, ch3_voltage, ch3_current, ch4_voltage, ch4_current, ch5_voltage, ch5_current, ch6_voltage, ch6_current, ch7_voltage, ch7_current, ch8_voltage, ch8_current) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(node_num) DO UPDATE SET "
-                    "timestamp=excluded.timestamp, ch1_voltage=excluded.ch1_voltage, ch1_current=excluded.ch1_current, "
-                    "ch2_voltage=excluded.ch2_voltage, ch2_current=excluded.ch2_current, ch3_voltage=excluded.ch3_voltage, ch3_current=excluded.ch3_current, "
-                    "ch4_voltage=excluded.ch4_voltage, ch4_current=excluded.ch4_current, ch5_voltage=excluded.ch5_voltage, ch5_current=excluded.ch5_current, "
-                    "ch6_voltage=excluded.ch6_voltage, ch6_current=excluded.ch6_current, ch7_voltage=excluded.ch7_voltage, ch7_current=excluded.ch7_current, "
-                    "ch8_voltage=excluded.ch8_voltage, ch8_current=excluded.ch8_current",
-                    (
-                        node_num,
-                        ts,
-                        power.get("ch1Voltage"),
-                        power.get("ch1Current"),
-                        power.get("ch2Voltage"),
-                        power.get("ch2Current"),
-                        power.get("ch3Voltage"),
-                        power.get("ch3Current"),
-                        power.get("ch4Voltage"),
-                        power.get("ch4Current"),
-                        power.get("ch5Voltage"),
-                        power.get("ch5Current"),
-                        power.get("ch6Voltage"),
-                        power.get("ch6Current"),
-                        power.get("ch7Voltage"),
-                        power.get("ch7Current"),
-                        power.get("ch8Voltage"),
-                        power.get("ch8Current"),
+                _upsert_node_scoped_packet(
+                    cur,
+                    self.table_power,
+                    node_num,
+                    ts,
+                    OrderedDict(
+                        [
+                            ("ch1_voltage", power.get("ch1Voltage")),
+                            ("ch1_current", power.get("ch1Current")),
+                            ("ch2_voltage", power.get("ch2Voltage")),
+                            ("ch2_current", power.get("ch2Current")),
+                            ("ch3_voltage", power.get("ch3Voltage")),
+                            ("ch3_current", power.get("ch3Current")),
+                            ("ch4_voltage", power.get("ch4Voltage")),
+                            ("ch4_current", power.get("ch4Current")),
+                            ("ch5_voltage", power.get("ch5Voltage")),
+                            ("ch5_current", power.get("ch5Current")),
+                            ("ch6_voltage", power.get("ch6Voltage")),
+                            ("ch6_current", power.get("ch6Current")),
+                            ("ch7_voltage", power.get("ch7Voltage")),
+                            ("ch7_current", power.get("ch7Current")),
+                            ("ch8_voltage", power.get("ch8Voltage")),
+                            ("ch8_current", power.get("ch8Current")),
+                        ]
                     ),
+                    packet,
                 )
 
             if isinstance(env, dict):
-                cur.execute(
-                    f"INSERT INTO {self.table_environment} (node_num, timestamp, temperature, relative_humidity, barometric_pressure, gas_resistance, voltage, current, iaq, distance, lux, white_lux, ir_lux, uv_lux, wind_direction, wind_speed, weight, wind_gust, wind_lull, radiation, rainfall_1h, rainfall_24h, soil_moisture, soil_temperature) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(node_num) DO UPDATE SET "
-                    "timestamp=excluded.timestamp, temperature=excluded.temperature, relative_humidity=excluded.relative_humidity, "
-                    "barometric_pressure=excluded.barometric_pressure, gas_resistance=excluded.gas_resistance, voltage=excluded.voltage, current=excluded.current, "
-                    "iaq=excluded.iaq, distance=excluded.distance, lux=excluded.lux, white_lux=excluded.white_lux, ir_lux=excluded.ir_lux, uv_lux=excluded.uv_lux, "
-                    "wind_direction=excluded.wind_direction, wind_speed=excluded.wind_speed, weight=excluded.weight, wind_gust=excluded.wind_gust, wind_lull=excluded.wind_lull, "
-                    "radiation=excluded.radiation, rainfall_1h=excluded.rainfall_1h, rainfall_24h=excluded.rainfall_24h, soil_moisture=excluded.soil_moisture, soil_temperature=excluded.soil_temperature",
-                    (
-                        node_num,
-                        ts,
-                        env.get("temperature"),
-                        env.get("relativeHumidity") if "relativeHumidity" in env else env.get("relative_humidity"),
-                        (
-                            env.get("barometricPressure")
-                            if "barometricPressure" in env
-                            else env.get("barometric_pressure")
-                        ),
-                        env.get("gasResistance") if "gasResistance" in env else env.get("gas_resistance"),
-                        env.get("voltage"),
-                        env.get("current"),
-                        env.get("iaq"),
-                        env.get("distance"),
-                        env.get("lux"),
-                        env.get("whiteLux") if "whiteLux" in env else env.get("white_lux"),
-                        env.get("irLux") if "irLux" in env else env.get("ir_lux"),
-                        env.get("uvLux") if "uvLux" in env else env.get("uv_lux"),
-                        env.get("windDirection") if "windDirection" in env else env.get("wind_direction"),
-                        env.get("windSpeed") if "windSpeed" in env else env.get("wind_speed"),
-                        env.get("weight"),
-                        env.get("windGust") if "windGust" in env else env.get("wind_gust"),
-                        env.get("windLull") if "windLull" in env else env.get("wind_lull"),
-                        env.get("radiation"),
-                        env.get("rainfall1h") if "rainfall1h" in env else env.get("rainfall_1h"),
-                        env.get("rainfall24h") if "rainfall24h" in env else env.get("rainfall_24h"),
-                        env.get("soilMoisture") if "soilMoisture" in env else env.get("soil_moisture"),
-                        env.get("soilTemperature") if "soilTemperature" in env else env.get("soil_temperature"),
+                _upsert_node_scoped_packet(
+                    cur,
+                    self.table_environment,
+                    node_num,
+                    ts,
+                    OrderedDict(
+                        [
+                            ("temperature", env.get("temperature")),
+                            ("relative_humidity", env.get("relativeHumidity") if "relativeHumidity" in env else env.get("relative_humidity")),
+                            ("barometric_pressure", env.get("barometricPressure") if "barometricPressure" in env else env.get("barometric_pressure")),
+                            ("gas_resistance", env.get("gasResistance") if "gasResistance" in env else env.get("gas_resistance")),
+                            ("voltage", env.get("voltage")),
+                            ("current", env.get("current")),
+                            ("iaq", env.get("iaq")),
+                            ("distance", env.get("distance")),
+                            ("lux", env.get("lux")),
+                            ("white_lux", env.get("whiteLux") if "whiteLux" in env else env.get("white_lux")),
+                            ("ir_lux", env.get("irLux") if "irLux" in env else env.get("ir_lux")),
+                            ("uv_lux", env.get("uvLux") if "uvLux" in env else env.get("uv_lux")),
+                            ("wind_direction", env.get("windDirection") if "windDirection" in env else env.get("wind_direction")),
+                            ("wind_speed", env.get("windSpeed") if "windSpeed" in env else env.get("wind_speed")),
+                            ("weight", env.get("weight")),
+                            ("wind_gust", env.get("windGust") if "windGust" in env else env.get("wind_gust")),
+                            ("wind_lull", env.get("windLull") if "windLull" in env else env.get("wind_lull")),
+                            ("radiation", env.get("radiation")),
+                            ("rainfall_1h", env.get("rainfall1h") if "rainfall1h" in env else env.get("rainfall_1h")),
+                            ("rainfall_24h", env.get("rainfall24h") if "rainfall24h" in env else env.get("rainfall_24h")),
+                            ("soil_moisture", env.get("soilMoisture") if "soilMoisture" in env else env.get("soil_moisture")),
+                            ("soil_temperature", env.get("soilTemperature") if "soilTemperature" in env else env.get("soil_temperature")),
+                        ]
                     ),
+                    packet,
                 )
 
             if isinstance(aq, dict):
-                cur.execute(
-                    f"INSERT INTO {self.table_air_quality} (node_num, timestamp, pm10_standard, pm25_standard, pm100_standard, pm10_environmental, pm25_environmental, pm100_environmental, particles_03um, particles_05um, particles_10um, particles_25um, particles_50um, particles_100um, co2, co2_temperature, co2_humidity, form_formaldehyde, form_humidity, form_temperature, pm40_standard, particles_40um, pm_temperature, pm_humidity, pm_voc_idx, pm_nox_idx, particles_tps) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(node_num) DO UPDATE SET "
-                    "timestamp=excluded.timestamp, pm10_standard=excluded.pm10_standard, pm25_standard=excluded.pm25_standard, pm100_standard=excluded.pm100_standard, "
-                    "pm10_environmental=excluded.pm10_environmental, pm25_environmental=excluded.pm25_environmental, pm100_environmental=excluded.pm100_environmental, "
-                    "particles_03um=excluded.particles_03um, particles_05um=excluded.particles_05um, particles_10um=excluded.particles_10um, particles_25um=excluded.particles_25um, "
-                    "particles_50um=excluded.particles_50um, particles_100um=excluded.particles_100um, co2=excluded.co2, co2_temperature=excluded.co2_temperature, co2_humidity=excluded.co2_humidity, "
-                    "form_formaldehyde=excluded.form_formaldehyde, form_humidity=excluded.form_humidity, form_temperature=excluded.form_temperature, pm40_standard=excluded.pm40_standard, "
-                    "particles_40um=excluded.particles_40um, pm_temperature=excluded.pm_temperature, pm_humidity=excluded.pm_humidity, pm_voc_idx=excluded.pm_voc_idx, pm_nox_idx=excluded.pm_nox_idx, particles_tps=excluded.particles_tps",
-                    (
-                        node_num,
-                        ts,
-                        aq.get("pm10Standard") if "pm10Standard" in aq else aq.get("pm10_standard"),
-                        aq.get("pm25Standard") if "pm25Standard" in aq else aq.get("pm25_standard"),
-                        aq.get("pm100Standard") if "pm100Standard" in aq else aq.get("pm100_standard"),
-                        aq.get("pm10Environmental") if "pm10Environmental" in aq else aq.get("pm10_environmental"),
-                        aq.get("pm25Environmental") if "pm25Environmental" in aq else aq.get("pm25_environmental"),
-                        aq.get("pm100Environmental") if "pm100Environmental" in aq else aq.get("pm100_environmental"),
-                        aq.get("particles03um") if "particles03um" in aq else aq.get("particles_03um"),
-                        aq.get("particles05um") if "particles05um" in aq else aq.get("particles_05um"),
-                        aq.get("particles10um") if "particles10um" in aq else aq.get("particles_10um"),
-                        aq.get("particles25um") if "particles25um" in aq else aq.get("particles_25um"),
-                        aq.get("particles50um") if "particles50um" in aq else aq.get("particles_50um"),
-                        aq.get("particles100um") if "particles100um" in aq else aq.get("particles_100um"),
-                        aq.get("co2"),
-                        aq.get("co2Temperature") if "co2Temperature" in aq else aq.get("co2_temperature"),
-                        aq.get("co2Humidity") if "co2Humidity" in aq else aq.get("co2_humidity"),
-                        aq.get("formFormaldehyde") if "formFormaldehyde" in aq else aq.get("form_formaldehyde"),
-                        aq.get("formHumidity") if "formHumidity" in aq else aq.get("form_humidity"),
-                        aq.get("formTemperature") if "formTemperature" in aq else aq.get("form_temperature"),
-                        aq.get("pm40Standard") if "pm40Standard" in aq else aq.get("pm40_standard"),
-                        aq.get("particles40um") if "particles40um" in aq else aq.get("particles_40um"),
-                        aq.get("pmTemperature") if "pmTemperature" in aq else aq.get("pm_temperature"),
-                        aq.get("pmHumidity") if "pmHumidity" in aq else aq.get("pm_humidity"),
-                        aq.get("pmVocIdx") if "pmVocIdx" in aq else aq.get("pm_voc_idx"),
-                        aq.get("pmNoxIdx") if "pmNoxIdx" in aq else aq.get("pm_nox_idx"),
-                        aq.get("particlesTps") if "particlesTps" in aq else aq.get("particles_tps"),
+                _upsert_node_scoped_packet(
+                    cur,
+                    self.table_air_quality,
+                    node_num,
+                    ts,
+                    OrderedDict(
+                        [
+                            ("pm10_standard", aq.get("pm10Standard") if "pm10Standard" in aq else aq.get("pm10_standard")),
+                            ("pm25_standard", aq.get("pm25Standard") if "pm25Standard" in aq else aq.get("pm25_standard")),
+                            ("pm100_standard", aq.get("pm100Standard") if "pm100Standard" in aq else aq.get("pm100_standard")),
+                            ("pm10_environmental", aq.get("pm10Environmental") if "pm10Environmental" in aq else aq.get("pm10_environmental")),
+                            ("pm25_environmental", aq.get("pm25Environmental") if "pm25Environmental" in aq else aq.get("pm25_environmental")),
+                            ("pm100_environmental", aq.get("pm100Environmental") if "pm100Environmental" in aq else aq.get("pm100_environmental")),
+                            ("particles_03um", aq.get("particles03um") if "particles03um" in aq else aq.get("particles_03um")),
+                            ("particles_05um", aq.get("particles05um") if "particles05um" in aq else aq.get("particles_05um")),
+                            ("particles_10um", aq.get("particles10um") if "particles10um" in aq else aq.get("particles_10um")),
+                            ("particles_25um", aq.get("particles25um") if "particles25um" in aq else aq.get("particles_25um")),
+                            ("particles_50um", aq.get("particles50um") if "particles50um" in aq else aq.get("particles_50um")),
+                            ("particles_100um", aq.get("particles100um") if "particles100um" in aq else aq.get("particles_100um")),
+                            ("co2", aq.get("co2")),
+                            ("co2_temperature", aq.get("co2Temperature") if "co2Temperature" in aq else aq.get("co2_temperature")),
+                            ("co2_humidity", aq.get("co2Humidity") if "co2Humidity" in aq else aq.get("co2_humidity")),
+                            ("form_formaldehyde", aq.get("formFormaldehyde") if "formFormaldehyde" in aq else aq.get("form_formaldehyde")),
+                            ("form_humidity", aq.get("formHumidity") if "formHumidity" in aq else aq.get("form_humidity")),
+                            ("form_temperature", aq.get("formTemperature") if "formTemperature" in aq else aq.get("form_temperature")),
+                            ("pm40_standard", aq.get("pm40Standard") if "pm40Standard" in aq else aq.get("pm40_standard")),
+                            ("particles_40um", aq.get("particles40um") if "particles40um" in aq else aq.get("particles_40um")),
+                            ("pm_temperature", aq.get("pmTemperature") if "pmTemperature" in aq else aq.get("pm_temperature")),
+                            ("pm_humidity", aq.get("pmHumidity") if "pmHumidity" in aq else aq.get("pm_humidity")),
+                            ("pm_voc_idx", aq.get("pmVocIdx") if "pmVocIdx" in aq else aq.get("pm_voc_idx")),
+                            ("pm_nox_idx", aq.get("pmNoxIdx") if "pmNoxIdx" in aq else aq.get("pm_nox_idx")),
+                            ("particles_tps", aq.get("particlesTps") if "particlesTps" in aq else aq.get("particles_tps")),
+                        ]
                     ),
+                    packet,
                 )
 
             if isinstance(ls, dict):
-                cur.execute(
-                    f"INSERT INTO {self.table_local_stats} (node_num, timestamp, uptime_seconds, channel_utilization, air_util_tx, num_packets_tx, num_packets_rx, num_packets_rx_bad, num_online_nodes, num_total_nodes, num_rx_dupe, num_tx_relay, num_tx_relay_canceled, heap_total_bytes, heap_free_bytes, num_tx_dropped) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(node_num) DO UPDATE SET "
-                    "timestamp=excluded.timestamp, uptime_seconds=excluded.uptime_seconds, channel_utilization=excluded.channel_utilization, "
-                    "air_util_tx=excluded.air_util_tx, num_packets_tx=excluded.num_packets_tx, num_packets_rx=excluded.num_packets_rx, "
-                    "num_packets_rx_bad=excluded.num_packets_rx_bad, num_online_nodes=excluded.num_online_nodes, num_total_nodes=excluded.num_total_nodes, "
-                    "num_rx_dupe=excluded.num_rx_dupe, num_tx_relay=excluded.num_tx_relay, num_tx_relay_canceled=excluded.num_tx_relay_canceled, "
-                    "heap_total_bytes=excluded.heap_total_bytes, heap_free_bytes=excluded.heap_free_bytes, num_tx_dropped=excluded.num_tx_dropped",
-                    (
-                        node_num,
-                        ts,
-                        ls.get("uptimeSeconds") if "uptimeSeconds" in ls else ls.get("uptime_seconds"),
-                        ls.get("channelUtilization") if "channelUtilization" in ls else ls.get("channel_utilization"),
-                        ls.get("airUtilTx") if "airUtilTx" in ls else ls.get("air_util_tx"),
-                        ls.get("numPacketsTx") if "numPacketsTx" in ls else ls.get("num_packets_tx"),
-                        ls.get("numPacketsRx") if "numPacketsRx" in ls else ls.get("num_packets_rx"),
-                        ls.get("numPacketsRxBad") if "numPacketsRxBad" in ls else ls.get("num_packets_rx_bad"),
-                        ls.get("numOnlineNodes") if "numOnlineNodes" in ls else ls.get("num_online_nodes"),
-                        ls.get("numTotalNodes") if "numTotalNodes" in ls else ls.get("num_total_nodes"),
-                        ls.get("numRxDupe") if "numRxDupe" in ls else ls.get("num_rx_dupe"),
-                        ls.get("numTxRelay") if "numTxRelay" in ls else ls.get("num_tx_relay"),
-                        (
-                            ls.get("numTxRelayCanceled")
-                            if "numTxRelayCanceled" in ls
-                            else ls.get("num_tx_relay_canceled")
-                        ),
-                        ls.get("heapTotalBytes") if "heapTotalBytes" in ls else ls.get("heap_total_bytes"),
-                        ls.get("heapFreeBytes") if "heapFreeBytes" in ls else ls.get("heap_free_bytes"),
-                        ls.get("numTxDropped") if "numTxDropped" in ls else ls.get("num_tx_dropped"),
+                _upsert_node_scoped_packet(
+                    cur,
+                    self.table_local_stats,
+                    node_num,
+                    ts,
+                    OrderedDict(
+                        [
+                            ("uptime_seconds", ls.get("uptimeSeconds") if "uptimeSeconds" in ls else ls.get("uptime_seconds")),
+                            ("channel_utilization", ls.get("channelUtilization") if "channelUtilization" in ls else ls.get("channel_utilization")),
+                            ("air_util_tx", ls.get("airUtilTx") if "airUtilTx" in ls else ls.get("air_util_tx")),
+                            ("num_packets_tx", ls.get("numPacketsTx") if "numPacketsTx" in ls else ls.get("num_packets_tx")),
+                            ("num_packets_rx", ls.get("numPacketsRx") if "numPacketsRx" in ls else ls.get("num_packets_rx")),
+                            ("num_packets_rx_bad", ls.get("numPacketsRxBad") if "numPacketsRxBad" in ls else ls.get("num_packets_rx_bad")),
+                            ("num_online_nodes", ls.get("numOnlineNodes") if "numOnlineNodes" in ls else ls.get("num_online_nodes")),
+                            ("num_total_nodes", ls.get("numTotalNodes") if "numTotalNodes" in ls else ls.get("num_total_nodes")),
+                            ("num_rx_dupe", ls.get("numRxDupe") if "numRxDupe" in ls else ls.get("num_rx_dupe")),
+                            ("num_tx_relay", ls.get("numTxRelay") if "numTxRelay" in ls else ls.get("num_tx_relay")),
+                            ("num_tx_relay_canceled", ls.get("numTxRelayCanceled") if "numTxRelayCanceled" in ls else ls.get("num_tx_relay_canceled")),
+                            ("heap_total_bytes", ls.get("heapTotalBytes") if "heapTotalBytes" in ls else ls.get("heap_total_bytes")),
+                            ("heap_free_bytes", ls.get("heapFreeBytes") if "heapFreeBytes" in ls else ls.get("heap_free_bytes")),
+                            ("num_tx_dropped", ls.get("numTxDropped") if "numTxDropped" in ls else ls.get("num_tx_dropped")),
+                        ]
                     ),
+                    packet,
                 )
 
             if isinstance(health, dict):
-                cur.execute(
-                    f"INSERT INTO {self.table_health} (node_num, timestamp, heart_bpm, spO2, temperature) "
-                    "VALUES (?,?,?,?,?) "
-                    "ON CONFLICT(node_num) DO UPDATE SET "
-                    "timestamp=excluded.timestamp, heart_bpm=excluded.heart_bpm, spO2=excluded.spO2, temperature=excluded.temperature",
-                    (
-                        node_num,
-                        ts,
-                        health.get("heartBpm") if "heartBpm" in health else health.get("heart_bpm"),
-                        health.get("spO2") if "spO2" in health else health.get("spO2"),
-                        health.get("temperature"),
+                _upsert_node_scoped_packet(
+                    cur,
+                    self.table_health,
+                    node_num,
+                    ts,
+                    OrderedDict(
+                        [
+                            ("heart_bpm", health.get("heartBpm") if "heartBpm" in health else health.get("heart_bpm")),
+                            ("spO2", health.get("spO2") if "spO2" in health else health.get("spO2")),
+                            ("temperature", health.get("temperature")),
+                        ]
                     ),
+                    packet,
                 )
 
             if isinstance(host, dict):
-                cur.execute(
-                    f"INSERT INTO {self.table_host} (node_num, timestamp, uptime_seconds, freemem_bytes, diskfree1_bytes, diskfree2_bytes, diskfree3_bytes, load1, load5, load15, user_string) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(node_num) DO UPDATE SET "
-                    "timestamp=excluded.timestamp, uptime_seconds=excluded.uptime_seconds, freemem_bytes=excluded.freemem_bytes, "
-                    "diskfree1_bytes=excluded.diskfree1_bytes, diskfree2_bytes=excluded.diskfree2_bytes, diskfree3_bytes=excluded.diskfree3_bytes, "
-                    "load1=excluded.load1, load5=excluded.load5, load15=excluded.load15, user_string=excluded.user_string",
-                    (
-                        node_num,
-                        ts,
-                        host.get("uptimeSeconds") if "uptimeSeconds" in host else host.get("uptime_seconds"),
-                        host.get("freememBytes") if "freememBytes" in host else host.get("freemem_bytes"),
-                        host.get("diskfree1Bytes") if "diskfree1Bytes" in host else host.get("diskfree1_bytes"),
-                        host.get("diskfree2Bytes") if "diskfree2Bytes" in host else host.get("diskfree2_bytes"),
-                        host.get("diskfree3Bytes") if "diskfree3Bytes" in host else host.get("diskfree3_bytes"),
-                        host.get("load1"),
-                        host.get("load5"),
-                        host.get("load15"),
-                        host.get("userString") if "userString" in host else host.get("user_string"),
+                _upsert_node_scoped_packet(
+                    cur,
+                    self.table_host,
+                    node_num,
+                    ts,
+                    OrderedDict(
+                        [
+                            ("uptime_seconds", host.get("uptimeSeconds") if "uptimeSeconds" in host else host.get("uptime_seconds")),
+                            ("freemem_bytes", host.get("freememBytes") if "freememBytes" in host else host.get("freemem_bytes")),
+                            ("diskfree1_bytes", host.get("diskfree1Bytes") if "diskfree1Bytes" in host else host.get("diskfree1_bytes")),
+                            ("diskfree2_bytes", host.get("diskfree2Bytes") if "diskfree2Bytes" in host else host.get("diskfree2_bytes")),
+                            ("diskfree3_bytes", host.get("diskfree3Bytes") if "diskfree3Bytes" in host else host.get("diskfree3_bytes")),
+                            ("load1", host.get("load1")),
+                            ("load5", host.get("load5")),
+                            ("load15", host.get("load15")),
+                            ("user_string", host.get("userString") if "userString" in host else host.get("user_string")),
+                        ]
                     ),
+                    packet,
                 )
 
             con.commit()
@@ -924,20 +990,31 @@ class MessageDB(_DB):
         return f'"{table_name}"'
 
     def ensure_channel_table(self, channel: Union[int, str]) -> None:
-        schema = "node_num TEXT," "message_text TEXT," "timestamp INTEGER"
+        schema = "node_num TEXT," "message_text TEXT," "timestamp INTEGER," f"{PACKET_META_SCHEMA}"
         with self.connect() as con:
             cur = con.cursor()
             cur.execute(f"CREATE TABLE IF NOT EXISTS {self._table_for_channel(channel)} ({schema})")
+            _ensure_packet_meta_columns(cur, self._table_for_channel(channel))
             con.commit()
 
-    def save_message(self, channel: Union[int, str], node_num: Union[int, str], message_text: str) -> int:
+    def save_message(
+        self,
+        channel: Union[int, str],
+        node_num: Union[int, str],
+        message_text: str,
+        *,
+        timestamp: Optional[int] = None,
+        packet: Optional[Dict[str, object]] = None,
+    ) -> int:
         self.ensure_channel_table(channel)
-        ts = int(time.time())
+        ts = int(timestamp or time.time())
         with self.connect() as con:
             cur = con.cursor()
+            columns = ["node_num", "message_text", "timestamp", *PACKET_META_COLUMN_NAMES]
+            placeholders = ", ".join("?" for _ in columns)
             cur.execute(
-                f"INSERT INTO {self._table_for_channel(channel)} (node_num, message_text, timestamp) VALUES (?, ?, ?)",
-                (str(node_num), message_text, ts),
+                f"INSERT INTO {self._table_for_channel(channel)} ({', '.join(columns)}) VALUES ({placeholders})",
+                (str(node_num), message_text, ts, *_packet_meta_values(packet or {})),
             )
             con.commit()
         return ts
@@ -1016,9 +1093,17 @@ def save_message_to_db(
     *,
     node_database_number: Union[int, str],
     db_path: Optional[str] = None,
+    timestamp: Optional[int] = None,
+    packet: Optional[Dict[str, object]] = None,
 ) -> Optional[int]:
     try:
-        return MessageDB(node_database_number, db_path).save_message(channel, node_num, message_text)
+        return MessageDB(node_database_number, db_path).save_message(
+            channel,
+            node_num,
+            message_text,
+            timestamp=timestamp,
+            packet=packet,
+        )
     except sqlite3.Error as e:
         logging.error(f"SQLite error in save_message_to_db: {e}")
     except Exception as e:
@@ -1171,7 +1256,13 @@ def store_text_message_packet(
             return None
 
         node_num = packet.get("from")
-        return MessageDB(node_database_number, db_path).save_message(channel, node_num, text)
+        return MessageDB(node_database_number, db_path).save_message(
+            channel,
+            node_num,
+            text,
+            timestamp=packet.get("rxTime"),
+            packet=packet,
+        )
     except sqlite3.Error as e:
         logging.error(f"SQLite error in store_text_message_packet: {e}")
     except Exception as e:
