@@ -122,3 +122,9 @@ battery = meshdb.get_node_metric("TestNode", "battery_level", owner_node_num=123
 ## Project Status
 
 Early development. Schema and API changes may occur.
+
+## License
+
+GPL-3.0-only. See [`LICENSE`](LICENSE).
+
+Meshtastic® is a registered trademark of Meshtastic LLC. Meshtastic software components are released under various licenses, see GitHub for details. No warranty is provided - use at your own risk.
