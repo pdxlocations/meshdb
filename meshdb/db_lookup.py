@@ -75,7 +75,13 @@ def _query_by_name(ndb: NodeDB, name: str) -> List[int]:
 
 
 def get_node_num(
-    identifier: Identifier, *, owner_node_num: Union[int, str], db_path: Optional[str] = None
+    identifier: Identifier,
+    *,
+    owner_node_num: Union[int, str],
+    db_path: Optional[str] = None,
+    channel: Optional[Union[int, str]] = None,
+    channel_name: Optional[str] = None,
+    storage_name: Optional[str] = None,
 ) -> ReturnType:
     """
     Return the canonical node number for any identifier.
@@ -91,7 +97,13 @@ def get_node_num(
       - list[int] if multiple matches
       - None if no matches
     """
-    ndb = NodeDB(owner_node_num, db_path)
+    ndb = NodeDB(
+        owner_node_num,
+        db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
 
     # 1) Already numeric
     if _is_int(identifier):
@@ -151,9 +163,24 @@ def _fetch_one_as_dict(con, query: str, params: tuple) -> Optional[Dict[str, Any
     return {c: row[i] for i, c in enumerate(cols)}
 
 
-def _resolve_to_list(identifier: Identifier, *, owner_node_num: Union[int, str], db_path: Optional[str]) -> List[int]:
+def _resolve_to_list(
+    identifier: Identifier,
+    *,
+    owner_node_num: Union[int, str],
+    db_path: Optional[str],
+    channel: Optional[Union[int, str]] = None,
+    channel_name: Optional[str] = None,
+    storage_name: Optional[str] = None,
+) -> List[int]:
     """Resolve any identifier to a list of node_nums (possibly empty)."""
-    hit = get_node_num(identifier, owner_node_num=owner_node_num, db_path=db_path)
+    hit = get_node_num(
+        identifier,
+        owner_node_num=owner_node_num,
+        db_path=db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     if hit is None:
         return []
     if isinstance(hit, list):
@@ -162,12 +189,31 @@ def _resolve_to_list(identifier: Identifier, *, owner_node_num: Union[int, str],
 
 
 def get_nodeinfo(
-    identifier: Identifier, *, owner_node_num: Union[int, str], db_path: Optional[str] = None
+    identifier: Identifier,
+    *,
+    owner_node_num: Union[int, str],
+    db_path: Optional[str] = None,
+    channel: Optional[Union[int, str]] = None,
+    channel_name: Optional[str] = None,
+    storage_name: Optional[str] = None,
 ) -> Union[Dict[str, Any], List[Dict[str, Any]], None]:
     """Return nodeinfo row(s) for the identifier. If ambiguous returns a list, if none returns None."""
-    ndb = NodeDB(owner_node_num, db_path)
+    ndb = NodeDB(
+        owner_node_num,
+        db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     ndb.ensure_table()
-    nums = _resolve_to_list(identifier, owner_node_num=owner_node_num, db_path=db_path)
+    nums = _resolve_to_list(
+        identifier,
+        owner_node_num=owner_node_num,
+        db_path=db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     if not nums:
         return None
     out: List[Dict[str, Any]] = []
@@ -182,9 +228,20 @@ def get_nodeinfo(
 
 
 def _latest_location_dict(
-    owner_node_num: Union[int, str], num: int, db_path: Optional[str]
+    owner_node_num: Union[int, str],
+    num: int,
+    db_path: Optional[str],
+    channel: Optional[Union[int, str]] = None,
+    channel_name: Optional[str] = None,
+    storage_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    ldb = LocationDB(owner_node_num, db_path)
+    ldb = LocationDB(
+        owner_node_num,
+        db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     ldb.ensure_table()
     with ldb.connect() as con:
         return _fetch_one_as_dict(
@@ -195,9 +252,20 @@ def _latest_location_dict(
 
 
 def _latest_telem_dicts(
-    owner_node_num: Union[int, str], num: int, db_path: Optional[str]
+    owner_node_num: Union[int, str],
+    num: int,
+    db_path: Optional[str],
+    channel: Optional[Union[int, str]] = None,
+    channel_name: Optional[str] = None,
+    storage_name: Optional[str] = None,
 ) -> Dict[str, Dict[str, Any]]:
-    tdb = TelemetryDB(owner_node_num, db_path)
+    tdb = TelemetryDB(
+        owner_node_num,
+        db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     tdb.ensure_tables()
     out: Dict[str, Dict[str, Any]] = {}
     with tdb.connect() as con:
@@ -240,7 +308,13 @@ def _latest_telem_dicts(
 
 
 def get_node(
-    identifier: Identifier, *, owner_node_num: Union[int, str], db_path: Optional[str] = None
+    identifier: Identifier,
+    *,
+    owner_node_num: Union[int, str],
+    db_path: Optional[str] = None,
+    channel: Optional[Union[int, str]] = None,
+    channel_name: Optional[str] = None,
+    storage_name: Optional[str] = None,
 ) -> Union[Dict[str, Any], List[Dict[str, Any]], None]:
     """Return a consolidated snapshot for the node(s): nodeinfo + latest position + latest telemetry types.
 
@@ -250,12 +324,25 @@ def get_node(
 
     Keys omitted when not available; e.g. no telemetry → no 'telemetry' key.
     """
-    nums = _resolve_to_list(identifier, owner_node_num=owner_node_num, db_path=db_path)
+    nums = _resolve_to_list(
+        identifier,
+        owner_node_num=owner_node_num,
+        db_path=db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     if not nums:
         return None
 
     snapshots: List[Dict[str, Any]] = []
-    ndb = NodeDB(owner_node_num, db_path)
+    ndb = NodeDB(
+        owner_node_num,
+        db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     ndb.ensure_table()
     with ndb.connect() as con:
         for num in nums:
@@ -263,10 +350,24 @@ def get_node(
             snap: Dict[str, Any] = {"node_num": num}
             if nodeinfo:
                 snap["nodeinfo"] = nodeinfo
-            loc = _latest_location_dict(owner_node_num, num, db_path)
+            loc = _latest_location_dict(
+                owner_node_num,
+                num,
+                db_path,
+                channel=channel,
+                channel_name=channel_name,
+                storage_name=storage_name,
+            )
             if loc:
                 snap["position"] = loc
-            telem = _latest_telem_dicts(owner_node_num, num, db_path)
+            telem = _latest_telem_dicts(
+                owner_node_num,
+                num,
+                db_path,
+                channel=channel,
+                channel_name=channel_name,
+                storage_name=storage_name,
+            )
             if telem:
                 snap["telemetry"] = telem
             snapshots.append(snap)
@@ -275,7 +376,14 @@ def get_node(
 
 
 def get_node_metric(
-    identifier: Identifier, metric: str, *, owner_node_num: Union[int, str], db_path: Optional[str] = None
+    identifier: Identifier,
+    metric: str,
+    *,
+    owner_node_num: Union[int, str],
+    db_path: Optional[str] = None,
+    channel: Optional[Union[int, str]] = None,
+    channel_name: Optional[str] = None,
+    storage_name: Optional[str] = None,
 ) -> Optional[Union[int, float, str]]:
     """
     Convenience helper: return a single field value for a node.
@@ -288,13 +396,27 @@ def get_node_metric(
     Returns a single scalar value or None.
     """
     # Resolve identifier → single node_num (first match wins)
-    nums = _resolve_to_list(identifier, owner_node_num=owner_node_num, db_path=db_path)
+    nums = _resolve_to_list(
+        identifier,
+        owner_node_num=owner_node_num,
+        db_path=db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     if not nums:
         return None
     num = nums[0]
 
     # 1) Try telemetry first
-    telem = _latest_telem_dicts(owner_node_num, num, db_path)
+    telem = _latest_telem_dicts(
+        owner_node_num,
+        num,
+        db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     if telem:
         for subtype in (
             "device",
@@ -348,7 +470,13 @@ def get_node_metric(
     if col not in allowed_nodedb_cols:
         return None
 
-    ndb = NodeDB(owner_node_num, db_path)
+    ndb = NodeDB(
+        owner_node_num,
+        db_path,
+        channel=channel,
+        channel_name=channel_name,
+        storage_name=storage_name,
+    )
     ndb.ensure_table()
     try:
         with ndb.connect() as con:

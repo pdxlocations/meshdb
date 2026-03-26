@@ -76,8 +76,11 @@ def _connect_udp(
 
 def _seed_virtual_node_info(owner_node_num: int, cfg: VirtualNodeConfig) -> None:
     from meshdb.db_handler import NodeDB
+    from meshtastic.util import generate_channel_hash
 
-    NodeDB(owner_node_num).upsert(
+    channel_hash = generate_channel_hash(cfg.channel, cfg.key)
+
+    NodeDB(owner_node_num, channel=channel_hash, channel_name=cfg.channel).upsert(
         node_num=owner_node_num,
         long_name=cfg.long_name,
         short_name=cfg.short_name,
