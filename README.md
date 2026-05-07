@@ -1,7 +1,11 @@
 # meshdb
 
 A lightweight Python library for storing Meshtastic node, telemetry, and message data in per-node SQLite databases.
+<p align="center">
 
+  <img src="https://github.com/user-attachments/assets/48eb9350-2b2a-4161-97e1-5b4c43a9214f" alt="meshdb logo" width="25%" />
+
+</p>
 ## Installation
 
 You can install `meshdb` directly from PyPI using pip:
