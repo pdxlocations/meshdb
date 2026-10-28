@@ -1,160 +1,97 @@
+"""Store and query one channel, including the connected radio's initial NodeDB.
+
+Edit the settings below to match your radio. UDP mode is a passive collector;
+use vnode when you need a transmitting Meshtastic 2.8 identity.
+"""
+
+import base64
+import json
 import os
 import time
-import json
-from typing import List
-from pubsub import pub
 
+from pubsub import pub
+from meshtastic.util import generate_channel_hash
 import meshdb
 
-"""
-Basic MeshDB integration demo
-=============================
-
-How to customize:
-  1) Set DB_BASE to where you want your per-owner DB files written.
-  2) Edit TARGETS to the nodes you want to query (id/hex suffix/short/long/numeric).
-  3) Run the script while a Meshtastic device is attached over USB/serial.
-
-What this demo shows:
-  - Resolving node numbers from many identifier forms (hex suffix, names, numeric)
-  - Pretty-printing a full node snapshot (nodeinfo + latest telemetry + latest position)
-  - Fetching a single metric (e.g., battery_level) via a convenience helper
-  - Live packet handling that persists NODEINFO/POSITION/TELEMETRY/TEXT_MESSAGE
-  - Auto-syncing the device's NodeDB into your local SQL DB on connect
-"""
-
-# -----------------------------
-# 1) Easy knobs
-# -----------------------------
-# Where to store DB files. Examples:
-#   "~/meshdb_data"            → creates <owner>.db files in that directory
-#   "./mesh.sqlite3"          → creates mesh.<owner>.sqlite3 alongside this script
-#   None or ""                 → current working directory
 DB_BASE = os.getcwd()
-
-# Nodes to query for examples. You can use any of:
-#   - "!deadbeef" (full hex id)
-#   - "deadbeef" or "1adc" (hex suffix)
-#   - "FONE" (short name)
-#   - "New Phone Who Dis?" (long name)
-#   - 4062650989 (node number)
-TARGETS: List[object] = [
-    "Meshtastic 1adc",  # free text with hex suffix
-    "1adc",  # hex suffix
-    "SenseRAT",  # long name
-    "FONE",  # short name
-]
-
-# A single metric to fetch for demonstration
-DEMO_METRIC = "hw_model"  # e.g., "battery_level"
-
-# -----------------------------
-# 2) Configure MeshDB base path
-# -----------------------------
-meshdb.set_default_db_path(DB_BASE)
-print(f"[meshdb] DB base set to: {DB_BASE}")
-
-# -----------------------------
-# 3) Connect (serial/tcp/udp)
-# -----------------------------
-# Set these directly in your script; no env vars required.
-TRANSPORT = "serial"  # "serial" | "tcp" | "udp"
-SERIAL_PORT = None  # e.g. "/dev/tty.usbmodem1234"
-TCP_HOST = "127.0.0.1:4403"
-VIRTUAL_NODE = meshdb.VirtualNodeConfig(
-    node_id="!89abcdef",
-    long_name="MeshDB Virtual Node",
-    short_name="MDB",
-    hw_model=255,
-    channel="MeshOregon",
-    key="AQ==",
-    mcast_group="224.0.0.69",
-    mcast_port=4403,
-)
-
-connection = meshdb.connect(
-    transport=TRANSPORT,
-    serial_port=SERIAL_PORT,
-    tcp_host=TCP_HOST,
-    virtual_node=VIRTUAL_NODE,
-)
-interface = connection.interface
-CONNECTED_NODE_NUM = connection.owner_node_num
-print(f"[meshdb] transport={connection.transport} connected_node_num={CONNECTED_NODE_NUM}")
-
-# -----------------------------
-# 4) Helper to pretty print JSON
-# -----------------------------
+TRANSPORT = "serial"  # "serial", "tcp", or "udp"
+SERIAL_PORT = None
+TCP_HOST = "127.0.0.1:4403"  # IPv6 with a port: "[::1]:4403"
+CHANNEL_NAME = "LongFast"
+CHANNEL_KEY = "AQ=="
+CHANNEL_INDEX = 0  # Radio channel index; distinct from its UDP wire hash.
+TARGETS = ["Meshtastic 1adc", "1adc", "SenseRAT", "FONE"]
+DEMO_METRIC = "hw_model"
 
 
-def jprint(obj):
-    print(json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False))
+def json_default(value):
+    if isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(value).decode("ascii")
+    raise TypeError(f"Cannot encode {type(value).__name__}")
 
 
-# -----------------------------
-# 5) Show resolution examples
-# -----------------------------
-print("\n=== Node number resolution examples ===")
-for ident in TARGETS:
-    resolved = meshdb.get_node_num(ident, owner_node_num=CONNECTED_NODE_NUM)
-    print(f"identifier= {ident!r} → node_num= {resolved}")
-
-# -----------------------------
-# 6) Show full snapshots for targets
-# -----------------------------
-print("\n=== Full node snapshots (nodeinfo + latest telemetry + latest position) ===")
-for ident in TARGETS:
-    snap = meshdb.get_node(ident, owner_node_num=CONNECTED_NODE_NUM)
-    if snap is None:
-        print(f"snapshot for {ident!r}: NOT FOUND")
-    else:
-        print(f"\n# snapshot for {ident!r}")
-        jprint(snap)
-
-# -----------------------------
-# 7) Show a single metric value (first-found subtype priority)
-# -----------------------------
-print("\n=== Single metric lookup ===")
-for ident in TARGETS:
-    val = meshdb.get_node_metric(ident, DEMO_METRIC, owner_node_num=CONNECTED_NODE_NUM)
-    print(f"{DEMO_METRIC} for {ident!r} → {val}")
-
-# Bonus: show a NodeInfo field via metric helper
-
-val = meshdb.get_node_metric("SenseRAT", "hw_model", owner_node_num=CONNECTED_NODE_NUM)
-print(f"hw_model for 'SenseRAT' → {val}")
-
-# -----------------------------
-# 8) Live receive: store packets and optionally observe
-# -----------------------------
-
-
-def on_receive(packet=None, interface=None, addr=None):
-    """Store NODEINFO/POSITION/TELEMETRY/TEXT_MESSAGE into the DB automatically."""
-    try:
-        normalized = meshdb.normalize_packet(packet, connection.transport)
-        result = meshdb.handle_packet(normalized, node_database_number=CONNECTED_NODE_NUM)
-
-        # Example: derive readable sender names
-        sender = normalized.get("from")
-        ln = meshdb.get_long_name(sender, node_database_number=CONNECTED_NODE_NUM)
-        sn = meshdb.get_short_name(sender, node_database_number=CONNECTED_NODE_NUM)
-        print(
-            f"saved={result} from={sender} long='{ln}' short='{sn}' "
-            f"port={normalized.get('decoded', {}).get('portnum')}"
+def run_demo(connection, db_base=DB_BASE, targets=TARGETS):
+    owner = connection.owner_node_num
+    scope = {
+        "db_path": db_base,
+        "channel": generate_channel_hash(CHANNEL_NAME, CHANNEL_KEY),
+        "channel_name": CHANNEL_NAME,
+    }
+    # These are the same scope arguments used for both writes and lookups.
+    if connection.transport != "udp":
+        count = meshdb.sync_nodes_from_interface(owner, connection.interface, **scope)
+        print(f"Imported {count} radio node records")
+    for identifier in targets:
+        number = meshdb.get_node_num(identifier, owner_node_num=owner, **scope)
+        snapshot = meshdb.get_node(identifier, owner_node_num=owner, **scope)
+        metric = meshdb.get_node_metric(
+            identifier, DEMO_METRIC, owner_node_num=owner, **scope
         )
+        print(f"{identifier!r}: number={number}, {DEMO_METRIC}={metric}")
+        print(json.dumps(snapshot, indent=2, ensure_ascii=False, default=json_default))
 
-    except Exception as e:
-        print(f"on_receive error: {e}")
+    def on_receive(packet=None, interface=None, addr=None):
+        if connection.transport != "udp" and interface is not connection.interface:
+            return
+        normalized = meshdb.normalize_packet(packet, connection.transport)
+        packet_channel = normalized.get("channel", 0)
+        expected_channel = (
+            scope["channel"] if connection.transport == "udp" else CHANNEL_INDEX
+        )
+        if not normalized.get("pkiEncrypted") and packet_channel != expected_channel:
+            return  # This example intentionally stores only the selected channel.
+        result = meshdb.handle_packet(normalized, node_database_number=owner, **scope)
+        sender = normalized.get("from")
+        name = meshdb.get_long_name(sender, node_database_number=owner, **scope)
+        print(f"saved={result} from={sender} long={name!r}")
+
+    pub.subscribe(on_receive, connection.receive_topic)
+    print(f"Listening on {connection.receive_topic}; Ctrl+C to exit")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        pub.unsubscribe(on_receive, connection.receive_topic)
+        meshdb.close_connection(connection)
 
 
-# Hook PubSub topic and idle forever
-pub.subscribe(on_receive, connection.receive_topic)
-print(f"\n[meshdb] Listening on topic '{connection.receive_topic}'… (Ctrl+C to exit)")
-try:
-    while True:
-        time.sleep(1)
-except KeyboardInterrupt:
-    pass
-finally:
-    meshdb.close_connection(connection)
+def main():
+    os.makedirs(DB_BASE, exist_ok=True)
+    connection = meshdb.connect(
+        transport=TRANSPORT,
+        serial_port=SERIAL_PORT,
+        tcp_host=TCP_HOST,
+        virtual_node=meshdb.VirtualNodeConfig(
+            channel=CHANNEL_NAME,
+            key=CHANNEL_KEY,
+            mcast_group="239.0.0.69",
+            mcast_port=4403,
+        ),
+    )
+    run_demo(connection)
+
+
+if __name__ == "__main__":
+    main()

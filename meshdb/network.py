@@ -20,7 +20,7 @@ class VirtualNodeConfig:
     hw_model: int = 255
     channel: str = "LongFast"
     key: str = "AQ=="
-    mcast_group: str = "224.0.0.69"
+    mcast_group: str = "239.0.0.69"
     mcast_port: int = 4403
 
 
@@ -45,7 +45,25 @@ def _connect_serial(serial_port: Optional[str] = None) -> Any:
 def _connect_tcp(hostname: str) -> Any:
     from meshtastic.tcp_interface import TCPInterface
 
-    return TCPInterface(hostname=hostname)
+    from ipaddress import IPv6Address
+    from urllib.parse import urlsplit
+
+    address = hostname.strip()
+    if address.count(":") > 1 and not address.startswith("["):
+        # An unbracketed IPv6 literal has no explicit port.
+        IPv6Address(address.split("%", 1)[0])
+        host, port = address, 4403
+    else:
+        endpoint = urlsplit("//" + address)
+        if (not endpoint.hostname or endpoint.username is not None
+                or endpoint.password is not None or endpoint.path
+                or endpoint.query or endpoint.fragment or address.endswith(":")):
+            raise ValueError("Expected a hostname, host:port, IPv6 literal, or [IPv6]:port")
+        host = endpoint.hostname
+        port = endpoint.port if endpoint.port is not None else 4403
+    if not 1 <= port <= 65535:
+        raise ValueError("TCP port must be between 1 and 65535")
+    return TCPInterface(hostname=host, portNumber=port)
 
 
 def _connect_udp(
@@ -224,6 +242,9 @@ def normalize_packet(packet: Any, transport: str) -> Dict[str, Any]:
     if transport_mechanism:
         out["transportMechanism"] = mesh_pb2.MeshPacket.TransportMechanism.Name(int(transport_mechanism))
 
+    # UDP flags are untrusted; only a local verifier can establish this status.
+    out["xeddsaSigned"] = False
+
     decoded_dict: Dict[str, Any] = {}
     decoded_msg = getattr(packet, "decoded", None)
     if decoded_msg is not None:
@@ -231,9 +252,27 @@ def normalize_packet(packet: Any, transport: str) -> Dict[str, Any]:
         decoded_dict["portnum"] = int(portnum) if portnum is not None else None
         decoded_dict["channel"] = int(getattr(packet, "channel", 0))
 
+        for proto_name, json_name in (
+            ("want_response", "wantResponse"), ("request_id", "requestId"),
+            ("reply_id", "replyId"), ("emoji", "emoji"),
+            ("source", "source"), ("dest", "dest"),
+        ):
+            decoded_dict[json_name] = getattr(decoded_msg, proto_name, 0)
+        if decoded_msg.HasField("bitfield"):
+            decoded_dict["bitfield"] = decoded_msg.bitfield
+        signature = getattr(decoded_msg, "xeddsa_signature", b"")
+        if not signature:
+            from google.protobuf.unknown_fields import UnknownFieldSet
+            signature = next((field.data for field in UnknownFieldSet(decoded_msg)
+                              if field.field_number == 10 and field.wire_type == 2), b"")
+        if signature:
+            decoded_dict["xeddsaSignature"] = base64.b64encode(bytes(signature)).decode("ascii")
+
         payload = getattr(decoded_msg, "payload", b"") or b""
         if isinstance(payload, str):
             payload = payload.encode("utf-8", errors="replace")
+
+        decoded_dict["payload"] = bytes(payload)
 
         if portnum == portnums_pb2.PortNum.TEXT_MESSAGE_APP:
             try:
@@ -255,7 +294,7 @@ def normalize_packet(packet: Any, transport: str) -> Dict[str, Any]:
                     elif portnum == portnums_pb2.PortNum.TELEMETRY_APP:
                         decoded_dict["telemetry"] = pb
                     else:
-                        decoded_dict["payload"] = pb
+                        decoded_dict["parsedPayload"] = pb
                 except Exception:
                     decoded_dict["payload"] = bytes(payload)
             else:
