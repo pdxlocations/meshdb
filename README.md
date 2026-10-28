@@ -67,7 +67,7 @@ conn = meshdb.connect(
         short_name="MDB",
         channel="LongFast",
         key="AQ==",
-        mcast_group="224.0.0.69",
+        mcast_group="239.0.0.69",
         mcast_port=4403,
     ),
 )
@@ -76,6 +76,17 @@ print(conn.transport, conn.owner_node_num)
 
 When receiving packets from `udp`, use `meshdb.normalize_packet(packet, "udp")`
 before passing to `meshdb.handle_packet(...)`.
+
+UDP collection is passive. `VirtualNodeConfig.node_id` selects a local storage
+owner; it does not claim a signed 2.8 identity or transmit nodeinfo. Use vnode for
+transmitting authenticated identities.
+
+TCP addresses accept a hostname/IP, `host:port`, an IPv6 literal, or `[IPv6]:port`.
+The default port is 4403. For example, `tcp_host="[::1]:4403"`.
+
+`examples/meshdb_demo.py` demonstrates initial NodeDB synchronization and uses
+the same channel scope for writes and lookups. Set its channel name, PSK, and
+radio channel index to match your radio; the index and UDP wire hash are distinct.
 
 ## CLI Listener
 
@@ -132,3 +143,16 @@ Early development. Schema and API changes may occur.
 GPL-3.0-only. See [`LICENSE`](LICENSE).
 
 Meshtastic® is a registered trademark of Meshtastic LLC. Meshtastic software components are released under various licenses, see GitHub for details. No warranty is provided - use at your own risk.
+
+## Packet signing metadata
+
+UDP normalization preserves binary payloads, the signed Data envelope fields,
+and the base64 `decoded.xeddsaSignature`. Packet storage includes
+`xeddsa_signature`, `xeddsa_signed`, raw payload bytes (when supplied), and
+the signed envelope fields; node records include
+`has_xeddsa_signed`. Existing tables gain these columns automatically.
+
+Signature presence is not proof of verification. UDP normalization always sets
+`xeddsaSigned` to false. Serial/TCP packet dictionaries can carry the connected
+radio's locally verified `xeddsaSigned` status. The node signing status latches
+verified observations for the same key and resets when that key changes.

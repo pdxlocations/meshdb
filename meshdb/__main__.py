@@ -107,7 +107,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--hw-model", type=int, default=255, help="Virtual node hardware model for udp transport.")
     parser.add_argument("--channel", default=DEFAULT_CHANNEL_NAME, help="Virtual node channel name for udp transport.")
     parser.add_argument("--key", default=DEFAULT_CHANNEL_KEY, help="Virtual node channel key for udp transport.")
-    parser.add_argument("--mcast-group", default="224.0.0.69", help="UDP multicast group for udp transport.")
+    parser.add_argument("--mcast-group", default="239.0.0.69", help="UDP multicast group for udp transport.")
     parser.add_argument("--mcast-port", type=int, default=4403, help="UDP multicast port for udp transport.")
     return parser.parse_args()
 

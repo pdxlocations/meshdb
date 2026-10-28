@@ -121,6 +121,16 @@ PACKET_META_COLUMNS: List[Tuple[str, str]] = [
     ("relay_node", "INTEGER"),
     ("tx_after", "INTEGER"),
     ("transport_mechanism", "TEXT"),
+    ("xeddsa_signature", "TEXT"),
+    ("xeddsa_signed", "INTEGER"),
+    ("raw_payload", "BLOB"),
+    ("want_response", "INTEGER"),
+    ("request_id", "INTEGER"),
+    ("reply_id", "INTEGER"),
+    ("emoji", "INTEGER"),
+    ("bitfield", "INTEGER"),
+    ("data_source", "INTEGER"),
+    ("data_dest", "INTEGER"),
 ]
 PACKET_META_COLUMN_NAMES = [name for name, _ in PACKET_META_COLUMNS]
 PACKET_META_SCHEMA = ", ".join(f"{name} {typ}" for name, typ in PACKET_META_COLUMNS)
@@ -140,6 +150,14 @@ def _packet_meta_values(packet: Dict[str, object]) -> Tuple[object, ...]:
             return None
         return int(bool(value))
 
+    decoded = packet.get("decoded") or {}
+    signature = decoded.get("xeddsaSignature")
+    if isinstance(signature, (bytes, bytearray)):
+        import base64
+        signature = base64.b64encode(signature).decode("ascii")
+    payload = decoded.get("payload")
+    if not isinstance(payload, (bytes, bytearray)):
+        payload = None
     return (
         packet.get("to"),
         packet.get("id"),
@@ -158,6 +176,16 @@ def _packet_meta_values(packet: Dict[str, object]) -> Tuple[object, ...]:
         packet.get("relayNode"),
         packet.get("txAfter"),
         packet.get("transportMechanism"),
+        signature,
+        as_int_bool(packet.get("xeddsaSigned")),
+        payload,
+        as_int_bool(decoded.get("wantResponse")),
+        decoded.get("requestId"),
+        decoded.get("replyId"),
+        decoded.get("emoji"),
+        decoded.get("bitfield"),
+        decoded.get("source"),
+        decoded.get("dest"),
     )
 
 
@@ -246,7 +274,8 @@ class NodeDB(_DB):
             "is_unmessagable INTEGER,"
             "last_heard INTEGER,"
             "hops_away INTEGER,"
-            "snr REAL"
+            "snr REAL,"
+            "has_xeddsa_signed INTEGER"
         )
         with self.connect() as con:
             cur = con.cursor()
@@ -261,6 +290,7 @@ class NodeDB(_DB):
                 ("hops_away", "INTEGER"),
                 ("snr", "REAL"),
                 ("is_licensed", "INTEGER"),
+                ("has_xeddsa_signed", "INTEGER"),
             ]:
                 if name not in cols:
                     cur.execute(f"ALTER TABLE {self.table} ADD COLUMN {name} {typ}")
@@ -280,6 +310,7 @@ class NodeDB(_DB):
         last_heard: Optional[int] = None,
         hops_away: Optional[int] = None,
         snr: Optional[float] = None,
+        has_xeddsa_signed: Optional[bool] = None,
     ) -> None:
         """Insert or update a node record, preserving unspecified fields."""
         self.ensure_table()
@@ -292,7 +323,7 @@ class NodeDB(_DB):
 
         with self.connect() as con:
             cur = con.cursor()
-            cur.execute(f"SELECT * FROM {self.table} WHERE node_num = ?", (node_num,))
+            cur.execute(f"SELECT node_num, long_name, short_name, macaddr, hw_model, role, is_licensed, public_key, is_unmessagable, last_heard, hops_away, snr, has_xeddsa_signed FROM {self.table} WHERE node_num = ?", (node_num,))
             existing = cur.fetchone()
 
             if existing:
@@ -309,11 +340,13 @@ class NodeDB(_DB):
                     ex_last,
                     ex_hops,
                     ex_snr,
+                    ex_signed,
                 ) = existing
             else:
                 ex_long = ex_short = ex_mac = ex_hw = ex_role = ex_lic = ex_pub = ex_unmsg = ex_last = ex_hops = (
                     ex_snr
                 ) = None
+                ex_signed = None
 
             long_name = normalized_text(long_name) if long_name is not None else ex_long
             short_name = normalized_text(short_name) if short_name is not None else ex_short
@@ -329,10 +362,15 @@ class NodeDB(_DB):
             hops_away = hops_away if hops_away is not None else (ex_hops if ex_hops is not None else None)
             snr = snr if snr is not None else (ex_snr if ex_snr is not None else None)
 
+            # A key replacement starts a new trust history. Unsigned updates to
+            # the same key do not erase a previously verified signing status.
+            key_changed = ex_pub is not None and public_key != ex_pub
+            has_xeddsa_signed = int(bool(has_xeddsa_signed) or (bool(ex_signed) and not key_changed))
+
             upsert_sql = f"""
                 INSERT INTO {self.table}
-                    (node_num, long_name, short_name, macaddr, hw_model, role, is_licensed, public_key, is_unmessagable, last_heard, hops_away, snr)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (node_num, long_name, short_name, macaddr, hw_model, role, is_licensed, public_key, is_unmessagable, last_heard, hops_away, snr, has_xeddsa_signed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(node_num) DO UPDATE SET
                     long_name=excluded.long_name,
                     short_name=excluded.short_name,
@@ -344,7 +382,8 @@ class NodeDB(_DB):
                     is_unmessagable=excluded.is_unmessagable,
                     last_heard=excluded.last_heard,
                     hops_away=excluded.hops_away,
-                    snr=excluded.snr
+                    snr=excluded.snr,
+                    has_xeddsa_signed=excluded.has_xeddsa_signed
             """
             cur.execute(
                 upsert_sql,
@@ -361,6 +400,7 @@ class NodeDB(_DB):
                     last_heard,
                     hops_away,
                     snr,
+                    has_xeddsa_signed,
                 ),
             )
             con.commit()
@@ -394,6 +434,7 @@ class NodeDB(_DB):
                 last_heard=node.get("lastHeard"),
                 hops_away=node.get("hopsAway"),
                 snr=node.get("snr"),
+                has_xeddsa_signed=bool(node.get("hasXeddsaSigned", False)),
             )
 
 
@@ -1303,6 +1344,7 @@ def maybe_store_nodeinfo_in_db(
             is_licensed=user.get("isLicensed") if isinstance(user, dict) else None,
             public_key=user.get("publicKey", ""),
             is_unmessagable=user.get("isUnmessagable", 0),
+            has_xeddsa_signed=bool(packet.get("xeddsaSigned", False)),
         )
     except sqlite3.Error as e:
         logging.error(f"SQLite error in maybe_store_nodeinfo_in_db: {e}")
@@ -1350,6 +1392,7 @@ def sync_owner_nodeinfo(
         last_heard=info.get("lastHeard"),
         hops_away=info.get("hopsAway"),
         snr=info.get("snr"),
+        has_xeddsa_signed=bool(info.get("hasXeddsaSigned", False)),
     )
 
 
@@ -1461,6 +1504,7 @@ def store_text_message_packet(
         message_channel = decoded.get("channel")
         if message_channel is None:
             message_channel = packet.get("channel")
+        direct_channel = message_channel in (None, 0, "0")
         message_channel = _normalize_channel(message_channel)
         if storage_channel is None:
             storage_channel = message_channel
@@ -1487,7 +1531,7 @@ def store_text_message_packet(
 
         node_num = packet.get("from")
         peer_node_num = _dm_peer_node_num(node_database_number, packet)
-        if message_channel in (None, 0) and peer_node_num is not None:
+        if direct_channel and peer_node_num is not None:
             return MessageDB(
                 node_database_number,
                 db_path,
@@ -1668,6 +1712,7 @@ def handle_packet(
                 node_num=packet.get("from"),
                 last_heard=packet.get("rxTime"),
                 snr=packet.get("snr"),
+                has_xeddsa_signed=bool(packet.get("xeddsaSigned", False)),
             )
             stored["touched_last_heard"] = True
         except Exception:
